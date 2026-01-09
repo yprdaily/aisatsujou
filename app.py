@@ -1,126 +1,139 @@
-import os
-import time
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-
 import streamlit as st
-
+import pandas as pd
+import os
+import tempfile
+from pathlib import Path
 import extract_greetings
 
-JST = timezone(timedelta(hours=9))
+st.set_page_config(page_title="挨拶状 送付対象者抽出", layout="wide", initial_sidebar_state="collapsed")
 
-
-def _env_required(name: str) -> str:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        raise RuntimeError(f"環境変数 {name} が未設定です。")
-    return str(v)
-
-
-def _env_int(name: str, default: int) -> int:
-    v = os.getenv(name)
-    if v is None or str(v).strip() == "":
-        return default
-    try:
-        n = int(str(v).strip())
-        return n if n > 0 else default
-    except Exception:
-        return default
-
-
-st.set_page_config(page_title="挨拶状抽出システム", layout="centered")
+APP_VERSION = (os.getenv("APP_VERSION") or "").strip()
+MAX_UPLOAD_MB = int((os.getenv("MAX_UPLOAD_MB") or "20").strip() or "20")
+EXPECTED_PASSWORD = (os.getenv("APP_PASSWORD") or "").strip()
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-try:
-    APP_PASSWORD = _env_required("APP_PASSWORD")
-except Exception as e:
-    st.error(str(e))
-    st.stop()
+def _hide_chrome():
+    st.markdown(
+        """
+        <style>
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
+        header {visibility: hidden;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-cfg = extract_greetings.load_config_from_env()
-max_upload_mb = _env_int("MAX_UPLOAD_MB", 20)
-max_upload_bytes = max_upload_mb * 1024 * 1024
+def _login_view():
+    _hide_chrome()
+    st.title("挨拶状 送付対象者抽出")
+    if APP_VERSION:
+        st.caption(f"Version: {APP_VERSION}")
 
-st.sidebar.header("設定")
-st.sidebar.write(
-    {
-        "APP_VERSION": cfg.app_version,
-        "ADDR_SPLIT_MODE": cfg.addr_split_mode,
-        "SURNAME_WHITELIST": ",".join(sorted(cfg.surname_whitelist)) if cfg.surname_whitelist else "",
-        "MAX_UPLOAD_MB": max_upload_mb,
-    }
-)
+    if not EXPECTED_PASSWORD:
+        st.error("APP_PASSWORD が未設定です（Cloud Run の Secret / 環境変数を確認してください）。")
+        st.stop()
 
-st.title("挨拶状 送付対象者抽出")
-st.markdown("---")
+    def check_password():
+        entered = (st.session_state.get("password_input") or "")
+        if entered == EXPECTED_PASSWORD:
+            st.session_state.authenticated = True
+            st.session_state.password_input = ""
+        else:
+            st.session_state.authenticated = False
+            st.error("パスワードが違います")
 
-
-def check_password():
-    if st.session_state.password_input == APP_PASSWORD:
-        st.session_state.authenticated = True
-        del st.session_state.password_input
-    else:
-        st.error("パスワードが違います")
-
-
-if not st.session_state.authenticated:
     st.subheader("ログイン")
     st.text_input("パスワードを入力してください", type="password", key="password_input", on_change=check_password)
     st.stop()
 
-st.info("経理提供のExcelファイルをアップロードしてください。処理は自動で行われます。")
+def _main_view():
+    _hide_chrome()
+    st.title("挨拶状 送付対象者抽出")
+    if APP_VERSION:
+        st.caption(f"Version: {APP_VERSION}")
 
-uploaded_file = st.file_uploader("Excelファイル (input.xlsx) をアップロード", type=["xlsx"])
+    st.info("経理提供のExcelファイルをアップロードしてください。処理結果はExcelでダウンロードできます。")
+    uploaded_file = st.file_uploader("Excelファイル (xlsx) をアップロード", type=["xlsx"])
 
-if uploaded_file is None:
-    st.stop()
+    if uploaded_file is None:
+        return
 
-if uploaded_file.size and uploaded_file.size > max_upload_bytes:
-    st.error(f"ファイルサイズが上限を超えています（上限: {max_upload_mb} MB）。")
-    st.stop()
+    max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+    try:
+        size = uploaded_file.size
+    except Exception:
+        size = None
 
-st.write({"ファイル名": uploaded_file.name, "サイズ(bytes)": int(uploaded_file.size or 0)})
+    if size is not None and size > max_bytes:
+        st.error(f"ファイルサイズが大きすぎます（上限 {MAX_UPLOAD_MB} MB）。")
+        return
 
-if st.button("処理実行", type="primary", use_container_width=True):
-    with st.status("処理を実行中...", expanded=True) as status:
-        started = time.time()
-        try:
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                input_path = tmp_path / "input.xlsx"
-                input_path.write_bytes(uploaded_file.getbuffer())
+    if st.button("処理実行"):
+        with st.status("処理を実行中...", expanded=True) as status:
+            original_base_dir = getattr(extract_greetings, "BASE_DIR", None)
+            original_input = getattr(extract_greetings, "INPUT_XLSX", None)
+            original_output = getattr(extract_greetings, "OUTPUT_XLSX", None)
+            original_log = getattr(extract_greetings, "LOG_FILE", None)
 
-                status.update(label="データ抽出・変換中...", state="running")
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_path = Path(tmp_dir)
 
-                out_bytes, summary = extract_greetings.process_excel_bytes(
-                    input_bytes=input_path.read_bytes(),
-                    input_filename=uploaded_file.name,
-                    config=extract_greetings.ProcessConfig(
-                        addr_split_mode=cfg.addr_split_mode,
-                        surname_whitelist=cfg.surname_whitelist,
-                        app_version=cfg.app_version,
-                    ),
-                )
+                    input_path = tmp_path / "input.xlsx"
+                    with open(input_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
 
-            elapsed = time.time() - started
-            status.update(label=f"処理完了（{elapsed:.2f}秒）", state="complete")
+                    output_path = tmp_path / "挨拶状_送付対象.xlsx"
+                    log_path = tmp_path / "process.log"
 
-            st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
-            st.subheader("処理サマリ")
-            st.write(summary)
+                    if hasattr(extract_greetings, "BASE_DIR"):
+                        extract_greetings.BASE_DIR = tmp_path
+                    if hasattr(extract_greetings, "INPUT_XLSX"):
+                        extract_greetings.INPUT_XLSX = input_path
+                    if hasattr(extract_greetings, "OUTPUT_XLSX"):
+                        extract_greetings.OUTPUT_XLSX = output_path
+                    if hasattr(extract_greetings, "LOG_FILE"):
+                        extract_greetings.LOG_FILE = log_path
 
-            ts = datetime.now(JST).strftime("%Y%m%d")
-            st.download_button(
-                label="📥 処理結果をダウンロード",
-                data=out_bytes,
-                file_name=f"挨拶状_送付対象_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
-        except Exception as e:
-            status.update(label="エラーが発生しました", state="error")
-            st.error(f"エラーが発生しました: {e}")
-            st.exception(e)
+                    status.update(label="データ抽出・変換中...", state="running")
+                    out = extract_greetings.main()
+
+                    status.update(label="処理完了。ダウンロード準備中...", state="running")
+                    out_path = Path(out)
+
+                    if not out_path.exists():
+                        raise FileNotFoundError(f"出力ファイルが見つかりません: {out_path}")
+
+                    with open(out_path, "rb") as f:
+                        data = f.read()
+
+                    status.update(label="処理完了！", state="complete")
+                    st.success("処理が完了しました。以下からダウンロードしてください。")
+
+                    st.download_button(
+                        label="📥 処理結果をダウンロード",
+                        data=data,
+                        file_name=f"挨拶状_送付対象_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+            except Exception as e:
+                st.error(f"エラーが発生しました: {e}")
+                st.exception(e)
+            finally:
+                if original_base_dir is not None:
+                    extract_greetings.BASE_DIR = original_base_dir
+                if original_input is not None:
+                    extract_greetings.INPUT_XLSX = original_input
+                if original_output is not None:
+                    extract_greetings.OUTPUT_XLSX = original_output
+                if original_log is not None:
+                    extract_greetings.LOG_FILE = original_log
+
+if not st.session_state.authenticated:
+    _login_view()
+else:
+    _main_view()
