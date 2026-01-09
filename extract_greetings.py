@@ -67,6 +67,7 @@ ALIAS_TEL = ["電話番号", "TEL", "Tel", "電話"]
 ALIAS_TANTO_NAME = ["担当者名称", "担当者名（社内）", "担当者名社内"]
 ALIAS_BUKA = ["部課名", "部課"]
 ALIAS_BUMON = ["部門", "分類２名", "分類2名", "分類３名", "分類3名"]
+ALIAS_HQ = ["本社所在地名", "本社所在地", "本社所在地名 "]
 
 
 @dataclass(frozen=True)
@@ -336,7 +337,7 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     col_client_direct = _find_col(cols, ["クライアント名"])
     col_tok1 = _find_col(cols, ["得意先名称１", "得意先名称1"])
     col_tok2 = _find_col(cols, ["得意先名称２", "得意先名称2"])
-    col_contact = _find_col(cols, ALIAS_CONTACT)
+    col_contact_generic = _find_col(cols, ALIAS_CONTACT)
     col_post = _find_col(cols, ALIAS_POST)
     col_addr1 = _find_col(cols, ALIAS_ADDR1)
     col_addr2 = _find_col(cols, ALIAS_ADDR2)
@@ -344,6 +345,7 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     col_tel = _find_col(cols, ALIAS_TEL)
     col_tanto = _find_col(cols, ALIAS_TANTO_NAME)
     col_buka = _find_col(cols, ALIAS_BUKA)
+    col_hq = _find_col(cols, ALIAS_HQ)
 
     col_bumon = None
     for cand in ["部門", "分類２名", "分類2名", "分類３名", "分類3名"]:
@@ -352,23 +354,19 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
             col_bumon = c
             break
 
-    mapping = {}
+    mapping: dict[str, str] = {}
 
     if col_client_direct:
         df["クライアント名"] = df[col_client_direct]
         mapping["クライアント名"] = col_client_direct
+    elif col_tok1:
+        df["クライアント名"] = df[col_tok1]
+        mapping["クライアント名"] = col_tok1
     else:
-        if col_tok1 or col_tok2:
-            a = df[col_tok1] if col_tok1 else ""
-            b = df[col_tok2] if col_tok2 else ""
-            df["クライアント名"] = (
-                a.map(safe_text).str.strip() + " " + b.map(safe_text).str.strip()
-            ).str.replace(r"^\s+|\s+$", "", regex=True).str.replace(r"\s{2,}", " ", regex=True)
-            mapping["クライアント名"] = "+".join([x for x in [col_tok1, col_tok2] if x])
-        else:
-            df["クライアント名"] = ""
-            mapping["クライアント名"] = ""
+        df["クライアント名"] = ""
+        mapping["クライアント名"] = ""
 
+    col_contact = col_tok2 if col_tok2 else col_contact_generic
     if col_contact:
         df["ご担当者名"] = df[col_contact]
         mapping["ご担当者名"] = col_contact
@@ -431,6 +429,13 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     else:
         df["部門"] = ""
         mapping["部門"] = ""
+
+    if col_hq:
+        df["本社所在地名"] = df[col_hq]
+        mapping["本社所在地名"] = col_hq
+    else:
+        df["本社所在地名"] = ""
+        mapping["本社所在地名"] = ""
 
     return df, mapping
 
@@ -504,13 +509,32 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     is_multi_mask = df_rest["_contact_raw"].map(is_multi_name_cell)
 
     df_valid = df_rest[valid_name_mask & ~is_multi_mask].copy()
-    df_multi_name = df_rest[is_multi_mask].copy()
+    df_multi_name_all = df_rest[is_multi_mask].copy()
     df_extraction_failure = df_rest[~valid_name_mask & ~is_multi_mask].copy()
 
-    if len(df_multi_name) > 0:
-        df_multi_name["理由"] = "複数名記号あり"
     if len(df_extraction_failure) > 0:
         df_extraction_failure["理由"] = "氏名抽出不可（2語形式でない/組織名誤認/役職誤認/前置き過長/姓長すぎ）"
+
+    df_multi_name_all["理由"] = "複数名記号あり"
+
+    def _pick_hq_row_for_multiname(g: pd.DataFrame) -> pd.DataFrame:
+        if "本社所在地名" in g.columns:
+            s = g["本社所在地名"].map(safe_text)
+            hq = g[s.str.contains("本社", na=False)]
+            if len(hq) > 0:
+                return hq.iloc[[0]]
+            non_empty = g[s.str.strip() != ""]
+            if len(non_empty) > 0:
+                return non_empty.iloc[[0]]
+        return _pick_by_hq_in_group(g, "クライアント名")
+
+    df_multi_name = df_multi_name_all
+    if len(df_multi_name) > 0:
+        df_multi_name = (
+            df_multi_name.sort_values(["_client_norm", "住所連結（全文）", "_contact_raw"])
+            .groupby("_client_norm", as_index=False, group_keys=False)
+            .apply(_pick_hq_row_for_multiname)
+        )
 
     client_nuniques = (
         df_valid.groupby("抽出氏名")["_client_norm"]

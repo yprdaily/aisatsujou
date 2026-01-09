@@ -1,59 +1,45 @@
-import os
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import os
+from io import BytesIO
 
 import extract_greetings
 
 
-st.set_page_config(page_title="挨拶状 送付対象者抽出", layout="centered", initial_sidebar_state="collapsed")
+def _consteq(a: str, b: str) -> bool:
+    if a is None:
+        a = ""
+    if b is None:
+        b = ""
+    a = str(a)
+    b = str(b)
+    if len(a) != len(b):
+        return False
+    r = 0
+    for x, y in zip(a.encode("utf-8"), b.encode("utf-8")):
+        r |= x ^ y
+    return r == 0
 
 
-APP_VERSION = (os.getenv("APP_VERSION") or "").strip()
-MAX_UPLOAD_MB = int((os.getenv("MAX_UPLOAD_MB") or "20").strip() or "20")
-EXPECTED_PASSWORD = (os.getenv("APP_PASSWORD") or "").rstrip("\r\n")
+def _require_password() -> None:
+    app_pw = str(os.getenv("APP_PASSWORD", "") or "")
+    if app_pw == "":
+        return
 
-
-def _hide_streamlit_ui():
-    st.markdown(
-        """
-        <style>
-        #MainMenu {visibility:hidden;}
-        footer {visibility:hidden;}
-        header {visibility:hidden;}
-
-        section[data-testid="stSidebar"] {display:none !important;}
-        div[data-testid="collapsedControl"] {display:none !important;}
-
-        .block-container {max-width: 980px; padding-top: 2.0rem; padding-bottom: 3.0rem;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _require_password():
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
-
-    if not EXPECTED_PASSWORD:
-        st.error("APP_PASSWORD が未設定です（Cloud Run の Secret / 環境変数を確認してください）。")
-        st.stop()
 
     if st.session_state.authenticated:
         return
 
-    st.title("挨拶状 送付対象者抽出")
-    if APP_VERSION:
-        st.caption(f"Version: {APP_VERSION}")
+    st.title("ログイン")
+    with st.form("login_form", clear_on_submit=False):
+        entered = st.text_input("パスワードを入力してください", type="password")
+        ok = st.form_submit_button("ログイン")
 
-    st.subheader("ログイン")
-    entered = st.text_input("パスワードを入力してください", type="password", key="password_input")
-
-    if st.button("ログイン"):
-        if (entered or "").rstrip("\r\n") == EXPECTED_PASSWORD:
+    if ok:
+        if _consteq(entered, app_pw):
             st.session_state.authenticated = True
-            st.session_state.pop("password_input", None)
             st.rerun()
         else:
             st.error("パスワードが違います")
@@ -61,59 +47,76 @@ def _require_password():
     st.stop()
 
 
-def _main():
-    _hide_streamlit_ui()
+def _max_upload_bytes() -> int:
+    mb = str(os.getenv("MAX_UPLOAD_MB", "20") or "20").strip()
+    try:
+        v = int(mb)
+    except Exception:
+        v = 20
+    if v <= 0:
+        v = 20
+    return v * 1024 * 1024
+
+
+def _main() -> None:
+    st.set_page_config(page_title="挨拶状抽出システム", layout="centered")
+
+    st.markdown(
+        """
+<style>
+.block-container { max-width: 980px; padding-top: 1.5rem; padding-bottom: 2rem; }
+footer { visibility: hidden; }
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
     _require_password()
 
+    cfg = extract_greetings.load_config_from_env()
+
     st.title("挨拶状 送付対象者抽出")
-    if APP_VERSION:
-        st.caption(f"Version: {APP_VERSION}")
+    st.markdown("---")
 
-    st.info("経理提供のExcelファイルをアップロードしてください。処理結果はExcelでダウンロードできます。")
+    if cfg.app_version:
+        st.caption(f"Version: {cfg.app_version}")
 
-    uploaded = st.file_uploader("Excelファイル（.xlsx）をアップロード", type=["xlsx"])
+    st.info("経理提供のExcelファイルをアップロードしてください。処理は自動で行われます。")
 
-    if uploaded is None:
+    uploaded_file = st.file_uploader("Excelファイル（.xlsx）をアップロード", type=["xlsx"])
+    if uploaded_file is None:
         return
 
-    try:
-        size = uploaded.size
-    except Exception:
-        size = None
-
-    if size is not None:
-        max_bytes = MAX_UPLOAD_MB * 1024 * 1024
-        if size > max_bytes:
-            st.error(f"ファイルサイズが大きすぎます（上限 {MAX_UPLOAD_MB} MB）。")
-            return
+    max_bytes = _max_upload_bytes()
+    b = uploaded_file.getvalue()
+    if len(b) > max_bytes:
+        st.error(f"ファイルサイズが大きすぎます（上限 {max_bytes // (1024*1024)} MB）")
+        return
 
     if st.button("処理実行"):
-        with st.status("処理を実行中...", expanded=True) as status:
+        with st.status("処理を実行中...", expanded=False) as status:
             try:
-                input_bytes = uploaded.getvalue()
-                input_name = getattr(uploaded, "name", "input.xlsx") or "input.xlsx"
-
-                status.update(label="設定読み込み...", state="running")
-                cfg = extract_greetings.load_config_from_env()
-
-                status.update(label="データ抽出・変換中...", state="running")
-                out_bytes, _summary = extract_greetings.process_excel_bytes(
-                    input_bytes=input_bytes,
-                    input_filename=input_name,
+                out_bytes, summary = extract_greetings.process_excel_bytes(
+                    input_bytes=b,
+                    input_filename=uploaded_file.name,
                     config=cfg,
                 )
-
                 status.update(label="処理完了！", state="complete")
 
+                ts = pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y%m%d")
                 st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
                 st.download_button(
                     label="📥 処理結果をダウンロード",
                     data=out_bytes,
-                    file_name=f"挨拶状_送付対象_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+                    file_name=f"挨拶状_送付対象_{ts}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
+                with st.expander("処理サマリ", expanded=False):
+                    st.json(summary)
+
             except Exception as e:
+                status.update(label="エラー", state="error")
                 st.error(f"エラーが発生しました: {e}")
                 st.exception(e)
 
