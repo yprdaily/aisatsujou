@@ -1,6 +1,4 @@
 import os
-import tempfile
-from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -55,7 +53,7 @@ def _require_password():
     if st.button("ログイン"):
         if (entered or "").rstrip("\r\n") == EXPECTED_PASSWORD:
             st.session_state.authenticated = True
-            st.session_state.password_input = ""
+            st.session_state.pop("password_input", None)
             st.rerun()
         else:
             st.error("パスワードが違います")
@@ -99,7 +97,7 @@ def _main():
                 cfg = extract_greetings.load_config_from_env()
 
                 status.update(label="データ抽出・変換中...", state="running")
-                out_bytes, summary = extract_greetings.process_excel_bytes(
+                out_bytes, _summary = extract_greetings.process_excel_bytes(
                     input_bytes=input_bytes,
                     input_filename=input_name,
                     config=cfg,
