@@ -2,6 +2,7 @@
 *.pyc
 *.pyo
 *.pyd
+*.log
 .env
 env.yaml
 *.log
