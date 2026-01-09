@@ -23,8 +23,6 @@ TITLE_KEYWORDS = [
     "担当者", "様"
 ]
 
-BANNED_IN_SURNAME = ["部", "課", "室", "所", "支", "営", "監", "会", "長", "役", "員"]
-
 OLD_KANJI_MAP = {"髙": "FBFC", "邊": "F6E2", "﨑": "FB99"}
 KANJI_REPLACE_MAP = {"髙": "高", "邊": "辺", "﨑": "崎"}
 
@@ -68,6 +66,10 @@ ALIAS_TANTO_NAME = ["担当者名称", "担当者名（社内）", "担当者名
 ALIAS_BUKA = ["部課名", "部課"]
 ALIAS_BUMON = ["部門", "分類２名", "分類2名", "分類３名", "分類3名"]
 ALIAS_HQ = ["本社所在地名", "本社所在地", "本社所在地名 "]
+
+DEPT_SUFFIXES = (
+    "部", "課", "室", "センター", "本部", "支店", "営業所", "事業部", "事務所", "店"
+)
 
 
 @dataclass(frozen=True)
@@ -164,6 +166,22 @@ def apply_kanji_conversion(text: Any) -> str:
     return t
 
 
+def split_client_and_dept(client_text: Any) -> tuple[str, str]:
+    raw = safe_text(client_text).strip()
+    if not raw:
+        return ("", "")
+    raw = re.sub(r"[ \t　]+", " ", raw).strip()
+    parts = raw.split(" ")
+    if len(parts) < 2:
+        return (raw, "")
+    tail = parts[-1].strip()
+    if tail and len(tail) <= 24 and tail.endswith(DEPT_SUFFIXES):
+        client = " ".join(parts[:-1]).strip()
+        if client:
+            return (client, tail)
+    return (raw, "")
+
+
 def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     raw = safe_text(text).strip()
     if not raw:
@@ -185,15 +203,15 @@ def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     if not last_family or not last_given:
         return None
 
-    if len(last_family) > 5:
+    if len(last_family) > 12:
         return None
 
     wl = surname_whitelist or set()
 
-    if any(b in last_family for b in BANNED_IN_SURNAME) and last_family not in wl:
+    if any(k in last_family for k in TITLE_KEYWORDS):
         return None
 
-    if any(k in last_family for k in TITLE_KEYWORDS):
+    if last_family not in wl and len(last_family) >= 3 and last_family.endswith(DEPT_SUFFIXES):
         return None
 
     extracted_part = m.group(0)
@@ -285,7 +303,7 @@ def _norm_col_key(s: Any) -> str:
     t = re.sub(r"[‐-‒–—―－-]", "-", t)
     t = t.replace("_", "").replace("（", "(").replace("）", ")")
     t = t.replace("１", "1").replace("２", "2").replace("３", "3")
-    t = t.replace("ｺｰﾄﾞ", "コード").replace("ｺｰﾄﾞ", "コード")
+    t = t.replace("ｺｰﾄﾞ", "コード")
     return t.lower()
 
 
@@ -304,10 +322,18 @@ def _find_col(cols: Iterable[str], aliases: list[str]) -> str | None:
     return None
 
 
-def _detect_header_row(excel_bytes: bytes, sheet_name: int | str = 0, max_scan_rows: int = 30) -> int:
-    df0 = pd.read_excel(BytesIO(excel_bytes), sheet_name=sheet_name, engine="openpyxl", header=None, nrows=max_scan_rows, dtype=object)
+def _detect_header_row(excel_bytes: bytes, sheet_name: int | str = 0, max_scan_rows: int = 50) -> int:
+    df0 = pd.read_excel(
+        BytesIO(excel_bytes),
+        sheet_name=sheet_name,
+        engine="openpyxl",
+        header=None,
+        nrows=max_scan_rows,
+        dtype=object,
+    )
     need_any = [
         ("client", ["得意先名称１", "得意先名称1", "クライアント名", "得意先名称", "得意先名"]),
+        ("contact", ["得意先名称２", "得意先名称2", "ご担当者名", "担当者"]),
         ("post", ["郵便番号", "〒"]),
         ("addr1", ["住所１", "住所1"]),
     ]
@@ -318,7 +344,7 @@ def _detect_header_row(excel_bytes: bytes, sheet_name: int | str = 0, max_scan_r
         for _, aliases in need_any:
             if any(_norm_col_key(a) in row_keys for a in aliases):
                 hit += 1
-        if hit >= 2:
+        if hit >= 3:
             return i
     return 0
 
@@ -440,13 +466,15 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     return df, mapping
 
 
-def _pick_by_hq_in_group(group: pd.DataFrame, text_col: str) -> pd.DataFrame:
-    def contains_hq(x: Any) -> bool:
-        s = safe_text(x)
-        return "本社" in s
-    hq_rows = group[group[text_col].apply(contains_hq)]
-    if len(hq_rows) > 0:
-        return hq_rows.iloc[[0]]
+def _pick_prefer_hq(group: pd.DataFrame) -> pd.DataFrame:
+    if "本社所在地名" in group.columns:
+        s = group["本社所在地名"].map(safe_text)
+        hq = group[s.str.contains("本社", na=False)]
+        if len(hq) > 0:
+            return hq.iloc[[0]]
+        non_empty = group[s.str.strip() != ""]
+        if len(non_empty) > 0:
+            return non_empty.iloc[[0]]
     return group.iloc[[0]]
 
 
@@ -460,6 +488,12 @@ def _finalize_for_export(df_in: pd.DataFrame) -> pd.DataFrame:
     df["住所２"] = bld
     df["住所３"] = ""
     return df
+
+
+def _norm_key_text(s: Any) -> str:
+    t = unicodedata.normalize("NFKC", safe_text(s))
+    t = re.sub(r"[\s　]+", "", t).strip()
+    return t
 
 
 def process_excel_bytes(input_bytes: bytes, input_filename: str, config: ProcessConfig) -> tuple[bytes, dict[str, Any]]:
@@ -477,10 +511,13 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
     obj_cols = [c for c in df.columns if df[c].dtype == object]
     for c in obj_cols:
-        if c != "クライアント名":
-            df[c] = df[c].map(normalize_half_katakana_only)
+        df[c] = df[c].map(normalize_half_katakana_only)
 
-    df["_client_raw"] = df["クライアント名"].map(safe_text)
+    client_split = df["クライアント名"].map(split_client_and_dept)
+    df["_client_clean"] = client_split.map(lambda t: t[0])
+    df["_client_dept"] = client_split.map(lambda t: t[1])
+
+    df["_client_raw"] = df["_client_clean"].map(safe_text)
     df["_client_norm"] = df["_client_raw"].map(normalize_full_katakana_to_half)
     df["_client_has_paren"] = df["_client_raw"].map(contains_parentheses_any_width)
 
@@ -488,17 +525,42 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     wl = config.surname_whitelist or set()
     df["抽出氏名"] = df["_contact_raw"].map(lambda x: extract_last_fullname(x, wl))
 
-    contact_details = df.apply(lambda r: separate_contact_details(r["_contact_raw"], r["抽出氏名"]), axis=1, result_type="expand")
+    contact_details = df.apply(
+        lambda r: separate_contact_details(r["_contact_raw"], r["抽出氏名"]),
+        axis=1,
+        result_type="expand",
+    )
     contact_details.columns = ["_contact_branch_dept", "_title", "抽出氏名（クリーン）"]
     df = pd.concat([df.reset_index(drop=True), contact_details.reset_index(drop=True)], axis=1)
 
     df["肩書"] = df["_title"].map(safe_text)
-    df["支店名"] = df["_contact_branch_dept"].map(safe_text)
+
+    def _dept_merge(row: pd.Series) -> str:
+        a = safe_text(row.get("_client_dept", "")).strip()
+        if a:
+            return a
+        b = safe_text(row.get("_contact_branch_dept", "")).strip()
+        if b and len(b) <= 24 and b.endswith(DEPT_SUFFIXES):
+            return b
+        return ""
+
+    df["部署"] = df.apply(_dept_merge, axis=1)
 
     df["住所連結（全文）"] = df.apply(lambda r: join_address(r["住所１"], r["住所２"], r["住所３"]), axis=1)
     base_and_building = df["住所連結（全文）"].map(split_building)
     df["住所１（番地まで）"] = base_and_building.map(lambda t: t[0])
     df["住所２（建物名）"] = base_and_building.map(lambda t: t[1])
+
+    df["_dedupe_addr"] = df["住所連結（全文）"].map(_norm_key_text)
+    df["_dedupe_client"] = df["_client_norm"].map(_norm_key_text)
+    df["_dedupe_tanto"] = df["担当者名称"].map(_norm_key_text)
+
+    df = (
+        df.sort_values(["_dedupe_client", "_dedupe_tanto", "_dedupe_addr", "_contact_raw"])
+        .groupby(["_dedupe_client", "_dedupe_tanto", "_dedupe_addr"], as_index=False, group_keys=False)
+        .apply(_pick_prefer_hq)
+        .reset_index(drop=True)
+    )
 
     mask_tantou_placeholder = df["_contact_raw"].map(is_tantou_placeholder)
     df_tantou = df[mask_tantou_placeholder].copy()
@@ -515,26 +577,16 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     if len(df_extraction_failure) > 0:
         df_extraction_failure["理由"] = "氏名抽出不可（2語形式でない/組織名誤認/役職誤認/前置き過長/姓長すぎ）"
 
-    df_multi_name_all["理由"] = "複数名記号あり"
-
-    def _pick_hq_row_for_multiname(g: pd.DataFrame) -> pd.DataFrame:
-        if "本社所在地名" in g.columns:
-            s = g["本社所在地名"].map(safe_text)
-            hq = g[s.str.contains("本社", na=False)]
-            if len(hq) > 0:
-                return hq.iloc[[0]]
-            non_empty = g[s.str.strip() != ""]
-            if len(non_empty) > 0:
-                return non_empty.iloc[[0]]
-        return _pick_by_hq_in_group(g, "クライアント名")
-
-    df_multi_name = df_multi_name_all
-    if len(df_multi_name) > 0:
+    if len(df_multi_name_all) > 0:
+        df_multi_name_all["理由"] = "複数名記号あり"
         df_multi_name = (
-            df_multi_name.sort_values(["_client_norm", "住所連結（全文）", "_contact_raw"])
+            df_multi_name_all.sort_values(["_client_norm", "住所連結（全文）", "_contact_raw"])
             .groupby("_client_norm", as_index=False, group_keys=False)
-            .apply(_pick_hq_row_for_multiname)
+            .apply(_pick_prefer_hq)
+            .reset_index(drop=True)
         )
+    else:
+        df_multi_name = df_multi_name_all
 
     client_nuniques = (
         df_valid.groupby("抽出氏名")["_client_norm"]
@@ -550,19 +602,21 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_paren_conflict = df_valid[mask_paren_conflict].copy()
     df_main_base = df_valid[~(mask_name_conflict | mask_paren_conflict)].copy()
 
-    df_name_conflict["理由"] = "氏名同一でクライアント相違"
-    df_paren_conflict["理由"] = "クライアント名に括弧あり"
+    if len(df_name_conflict) > 0:
+        df_name_conflict["理由"] = "氏名同一でクライアント相違"
+    if len(df_paren_conflict) > 0:
+        df_paren_conflict["理由"] = "クライアント名に括弧あり"
 
     selected_by_name = (
         df_main_base.sort_values(["抽出氏名", "_contact_raw"])
         .groupby("抽出氏名", as_index=False, group_keys=False)
-        .apply(lambda g: _pick_by_hq_in_group(g, "クライアント名"))
+        .apply(_pick_prefer_hq)
     )
 
     selected_by_client = (
         selected_by_name.sort_values(["_client_norm", "_contact_raw", "抽出氏名"])
         .groupby("_client_norm", as_index=False, group_keys=False)
-        .apply(lambda g: _pick_by_hq_in_group(g, "クライアント名"))
+        .apply(_pick_prefer_hq)
     )
 
     def _split_name(x: Any) -> tuple[str, str]:
@@ -584,9 +638,9 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_extraction_failure_out = _finalize_for_export(df_extraction_failure)
     df_multi_name_out = _finalize_for_export(df_multi_name)
 
-    common_export_cols = [
-        "クライアント名（半角カタカナ統一）",
-        "支店名",
+    export_cols_main = [
+        "クライアント名",
+        "部署",
         "肩書",
         "送付氏名（姓　名）", "姓", "名",
         "郵便番号",
@@ -595,32 +649,52 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         "電話番号",
         "旧字メモ（氏名）",
         "旧字メモ（住所）",
-        "クライアント名", "ご担当者名", "担当者名称", "部課名", "部門",
-        "住所連結（全文）",
     ]
+    export_cols_check = ["理由"] + export_cols_main
 
-    def _attach_common(df0: pd.DataFrame) -> pd.DataFrame:
-        d = df0.copy()
-        d["クライアント名（半角カタカナ統一）"] = d["_client_norm"].map(safe_text)
-        if "送付氏名（姓　名）" not in d.columns:
-            d["送付氏名（姓　名）"] = d.get("抽出氏名（クリーン）", d.get("抽出氏名", "")).map(safe_text)
-        if "姓" not in d.columns:
-            d["姓"] = ""
-        if "名" not in d.columns:
-            d["名"] = ""
-        for c in ["支店名", "肩書", "郵便番号", "電話番号", "担当者名称", "部課名", "部門"]:
-            if c not in d.columns:
-                d[c] = ""
-        return d
+    def _ensure_export_base(d: pd.DataFrame) -> pd.DataFrame:
+        x = d.copy()
+        x["クライアント名"] = x.get("_client_clean", x.get("クライアント名", "")).map(safe_text)
+        if "部署" not in x.columns:
+            x["部署"] = ""
+        if "肩書" not in x.columns:
+            x["肩書"] = ""
+        if "送付氏名（姓　名）" not in x.columns:
+            x["送付氏名（姓　名）"] = x.get("抽出氏名（クリーン）", x.get("抽出氏名", "")).map(safe_text)
+        for c in ["姓", "名", "郵便番号", "電話番号", "旧字メモ（氏名）", "旧字メモ（住所）"]:
+            if c not in x.columns:
+                x[c] = ""
+        for c in ["住所１", "住所２", "住所３", "住所（全文）"]:
+            if c not in x.columns:
+                x[c] = ""
+        return x
 
-    df_main = _attach_common(df_main)[common_export_cols]
+    df_main = _ensure_export_base(df_main)[export_cols_main]
 
-    common_check_cols = ["理由"] + [c for c in common_export_cols if c not in ["姓", "名"]]
-    df_name_conflict_out = _attach_common(df_name_conflict_out)[common_check_cols]
-    df_paren_conflict_out = _attach_common(df_paren_conflict_out)[common_check_cols]
-    df_tantou_out = _attach_common(df_tantou_out)[[c for c in common_check_cols if c not in ["送付氏名（姓　名）", "姓", "名"]]]
-    df_extraction_failure_out = _attach_common(df_extraction_failure_out)[["理由"] + [c for c in common_export_cols if c not in ["姓", "名", "送付氏名（姓　名）"]]]
-    df_multi_name_out = _attach_common(df_multi_name_out)[["理由"] + [c for c in common_export_cols if c not in ["姓", "名", "送付氏名（姓　名）"]]]
+    df_name_conflict_out = _ensure_export_base(df_name_conflict_out)
+    if "理由" not in df_name_conflict_out.columns:
+        df_name_conflict_out["理由"] = ""
+    df_name_conflict_out = df_name_conflict_out[export_cols_check]
+
+    df_paren_conflict_out = _ensure_export_base(df_paren_conflict_out)
+    if "理由" not in df_paren_conflict_out.columns:
+        df_paren_conflict_out["理由"] = ""
+    df_paren_conflict_out = df_paren_conflict_out[export_cols_check]
+
+    df_tantou_out = _ensure_export_base(df_tantou_out)
+    if "理由" not in df_tantou_out.columns:
+        df_tantou_out["理由"] = ""
+    df_tantou_out = df_tantou_out[export_cols_check]
+
+    df_extraction_failure_out = _ensure_export_base(df_extraction_failure_out)
+    if "理由" not in df_extraction_failure_out.columns:
+        df_extraction_failure_out["理由"] = ""
+    df_extraction_failure_out = df_extraction_failure_out[export_cols_check]
+
+    df_multi_name_out = _ensure_export_base(df_multi_name_out)
+    if "理由" not in df_multi_name_out.columns:
+        df_multi_name_out["理由"] = ""
+    df_multi_name_out = df_multi_name_out[export_cols_check]
 
     out_buf = BytesIO()
     with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
@@ -635,6 +709,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         "app_version": config.app_version,
         "input_filename": input_filename,
         "rows_input": int(len(df_raw)),
+        "rows_after_dedupe": int(len(df)),
         "header_mapping": mapping,
         "counts": {
             "送付対象": int(len(df_main)),
