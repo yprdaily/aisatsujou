@@ -553,10 +553,9 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     has_blocklot = bool(re.search(rf"(丁目|番地|番)|\d{{1,4}}{HYPHEN}\d{{1,4}}", t))
     has_two_go = len(re.findall(r"号", t)) >= 2
 
-    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
-    if m:
-        prefix = (m.group(1) or "").strip()
-        rest = (m.group(2) or "").strip()
+    def _post_check(prefix: str, rest: str) -> Tuple[str, str, bool]:
+        prefix = _compact(prefix)
+        rest = _compact(rest)
         if not rest:
             return (prefix, "", False)
         if _is_buildingish(rest):
@@ -569,40 +568,26 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
                 return (prefix, rest, True)
             return (prefix, rest, amb)
         return (t, "", False)
+
+    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}{HYPHEN}\d{{1,4}})(.+)$", t)
+    if m:
+        return _post_check(m.group(1) or "", m.group(2) or "")
+
+    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}})(.+)$", t)
+    if m:
+        rest0 = m.group(2) or ""
+        if re.match(rf"^{HYPHEN}\d", rest0):
+            pass
+        else:
+            return _post_check(m.group(1) or "", rest0)
 
     m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
     if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            if re.fullmatch(r"\d{1,6}", rest):
-                return (t, "", False)
-            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
-                return (prefix, rest, True)
-            return (prefix, rest, amb)
-        return (t, "", False)
+        return _post_check(m.group(1) or "", m.group(2) or "")
 
     m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
     if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            if re.fullmatch(r"\d{1,6}", rest):
-                return (t, "", False)
-            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
-                return (prefix, rest, True)
-            return (prefix, rest, amb)
-        return (t, "", False)
+        return _post_check(m.group(1) or "", m.group(2) or "")
 
     buildingish = _is_buildingish(t)
 
