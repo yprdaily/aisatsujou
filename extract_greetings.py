@@ -550,7 +550,6 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     if did and bld:
         return (base, bld, False)
 
-    has_blocklot = bool(re.search(rf"(丁目|番地|番)|\d{{1,4}}{HYPHEN}\d{{1,4}}", t))
     has_two_go = len(re.findall(r"号", t)) >= 2
 
     def _post_check(prefix: str, rest: str) -> Tuple[str, str, bool]:
@@ -576,9 +575,7 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}})(.+)$", t)
     if m:
         rest0 = m.group(2) or ""
-        if re.match(rf"^{HYPHEN}\d", rest0):
-            pass
-        else:
+        if not re.match(rf"^{HYPHEN}\d", rest0):
             return _post_check(m.group(1) or "", rest0)
 
     m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
@@ -589,7 +586,14 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     if m:
         return _post_check(m.group(1) or "", m.group(2) or "")
 
+    has_hyphen_block = bool(re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", t))
+    has_numbered_block = bool(re.search(r"\d{1,4}(?:丁目|番地|番|号)", t))
+
+    if any(k in t for k in BUILDING_KEYWORDS) and not has_hyphen_block and not has_numbered_block:
+        return ("", t, False)
+
     buildingish = _is_buildingish(t)
+    has_blocklot = bool(re.search(r"(丁目|番地|番)", t)) or has_hyphen_block
 
     if buildingish and not has_blocklot:
         return ("", t, False)
