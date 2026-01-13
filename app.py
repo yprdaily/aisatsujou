@@ -1,7 +1,7 @@
-import streamlit as st
-import pandas as pd
 import os
-from io import BytesIO
+
+import pandas as pd
+import streamlit as st
 
 import extract_greetings
 
@@ -94,31 +94,29 @@ footer { visibility: hidden; }
         return
 
     if st.button("処理実行"):
-        with st.status("処理を実行中...", expanded=False) as status:
-            try:
+        try:
+            with st.spinner("処理を実行中..."):
                 out_bytes, summary = extract_greetings.process_excel_bytes(
                     input_bytes=b,
                     input_filename=uploaded_file.name,
                     config=cfg,
                 )
-                status.update(label="処理完了！", state="complete")
 
-                ts = pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y%m%d")
-                st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
-                st.download_button(
-                    label="📥 処理結果をダウンロード",
-                    data=out_bytes,
-                    file_name=f"挨拶状_送付対象_{ts}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            ts = pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y%m%d")
+            st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
+            st.download_button(
+                label="📥 処理結果をダウンロード",
+                data=out_bytes,
+                file_name=f"挨拶状_送付対象_{ts}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
-                with st.expander("処理サマリ", expanded=False):
-                    st.json(summary)
+            with st.expander("処理サマリ", expanded=False):
+                st.json(summary)
 
-            except Exception as e:
-                status.update(label="エラー", state="error")
-                st.error(f"エラーが発生しました: {e}")
-                st.exception(e)
+        except Exception as e:
+            st.error(f"エラーが発生しました: {e}")
+            st.exception(e)
 
 
 if __name__ == "__main__":

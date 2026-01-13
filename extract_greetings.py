@@ -4,29 +4,28 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
-from typing import Any, Iterable
+from typing import Any, Iterable, Tuple
 
 import pandas as pd
 
 JST = timezone(timedelta(hours=9))
 
 BUILDING_KEYWORDS = [
-    "ビル", "ビルディング", "マンション", "アパート", "ハイツ", "コーポ",
-    "レジデンス", "タワー", "プラザ", "会館", "会舘", "センター", "オフィス",
-    "工場", "寮", "荘", "コート", "ハウス", "ホーム", "館", "庁舎", "棟"
+    "ビル", "ﾋﾞﾙ", "ビルディング", "ﾋﾞﾙﾃﾞｨﾝｸﾞ", "マンション", "ﾏﾝｼｮﾝ", "アパート", "ｱﾊﾟｰﾄ",
+    "ハイツ", "ﾊｲﾂ", "コーポ", "ｺｰﾎﾟ", "レジデンス", "ﾚｼﾞﾃﾞﾝｽ", "タワー", "ﾀﾜｰ", "プラザ", "ﾌﾟﾗｻﾞ",
+    "会館", "会舘", "センター", "ｾﾝﾀｰ", "オフィス", "ｵﾌｨｽ", "工場", "寮", "荘", "コート", "ｺｰﾄ",
+    "ハウス", "ﾊｳｽ", "ホーム", "ﾎｰﾑ", "館", "庁舎", "棟"
 ]
 HYPHEN = r"[－-]"
 
 TITLE_KEYWORDS = [
     "代表取締役", "取締役", "執行役員", "監査役", "会長", "社長", "専務", "常務",
     "本部長", "部長", "次長", "課長", "室長", "所長", "支店長", "マネージャー",
-    "担当者", "様"
+    "担当者"
 ]
 
 OLD_KANJI_MAP = {"髙": "FBFC", "邊": "F6E2", "﨑": "FB99"}
 KANJI_REPLACE_MAP = {"髙": "高", "邊": "辺", "﨑": "崎"}
-
-HALF_KATA_REGEX = re.compile(r"[\uFF61-\uFF9F]")
 
 FULL_KATA_MAP = {
     'ガ': 'ｶﾞ', 'ギ': 'ｷﾞ', 'グ': 'ｸﾞ', 'ゲ': 'ｹﾞ', 'ゴ': 'ｺﾞ',
@@ -37,7 +36,7 @@ FULL_KATA_MAP = {
     'ヴ': 'ｳﾞ', 'ワ': 'ﾜ', 'ヰ': 'ｲ', 'ヱ': 'ｴ', 'ヲ': 'ｦ',
     'ア': 'ｱ', 'イ': 'ｲ', 'ウ': 'ｳ', 'エ': 'ｴ', 'オ': 'ｵ',
     'カ': 'ｶ', 'キ': 'ｷ', 'ク': 'ｸ', 'ケ': 'ｹ', 'コ': 'ｺ',
-    'サ': 'ｻ', 'シ': 'ｼ', 'ス': 'ｽ', 'セ': 'ｾ', 'ソ': 'ｿ',
+    'サ': 'ｻ', 'シ': 'ｼﾞ' if False else 'ｼ', 'ス': 'ｽ', 'セ': 'ｾ', 'ソ': 'ｿ',
     'タ': 'ﾀ', 'チ': 'ﾁ', 'ツ': 'ﾂ', 'テ': 'ﾃ', 'ト': 'ﾄ',
     'ナ': 'ﾅ', 'ニ': 'ﾆ', 'ヌ': 'ﾇ', 'ネ': 'ﾈ', 'ノ': 'ﾉ',
     'ハ': 'ﾊ', 'ヒ': 'ﾋ', 'フ': 'ﾌ', 'ヘ': 'ﾍ', 'ホ': 'ﾎ',
@@ -70,6 +69,8 @@ ALIAS_HQ = ["本社所在地名", "本社所在地", "本社所在地名 "]
 DEPT_SUFFIXES = (
     "部", "課", "室", "センター", "本部", "支店", "営業所", "事業部", "事務所", "店"
 )
+
+COMPANY_MARKERS = ("株式会社", "有限会社", "合同会社", "（株）", "(株)", "㈱", "（有）", "(有)", "㈲")
 
 
 @dataclass(frozen=True)
@@ -110,17 +111,8 @@ def normalize_space_to_fullwidth(s: Any) -> str:
     return t
 
 
-def normalize_half_katakana_only(s: Any) -> str:
+def normalize_katakana_to_half(s: Any) -> str:
     t = safe_text(s)
-    if not t:
-        return ""
-    if HALF_KATA_REGEX.search(t):
-        return unicodedata.normalize("NFKC", t)
-    return t
-
-
-def normalize_full_katakana_to_half(s: Any) -> str:
-    t = unicodedata.normalize("NFKC", safe_text(s))
     if not t:
         return ""
     pattern = "|".join(map(re.escape, FULL_KATA_MAP.keys()))
@@ -137,6 +129,14 @@ def contains_parentheses_any_width(text: Any) -> bool:
 def is_tantou_placeholder(text: Any) -> bool:
     t = safe_text(text)
     return ("ご担当者様" in t) or ("ご担当者" in t)
+
+
+def strip_honorific_suffix(text: Any) -> str:
+    t = normalize_space_to_fullwidth(text)
+    if not t:
+        return ""
+    t = re.sub(r"[ 　]*(様|さま|殿)\s*$", "", t)
+    return t
 
 
 def is_multi_name_cell(text: Any) -> bool:
@@ -187,6 +187,8 @@ def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     if not raw:
         return None
 
+    raw = strip_honorific_suffix(raw)
+
     m = re.search(r"([^\s　]+)[\s　]+([^\s　]+)\s*$", raw)
     if not m:
         return None
@@ -203,15 +205,21 @@ def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     if not last_family or not last_given:
         return None
 
-    if len(last_family) > 12:
+    if any(mark in last_family or mark in last_given for mark in COMPANY_MARKERS):
         return None
 
     wl = surname_whitelist or set()
 
-    if any(k in last_family for k in TITLE_KEYWORDS):
+    if any(k in last_family for k in TITLE_KEYWORDS) or any(k in last_given for k in TITLE_KEYWORDS):
+        return None
+
+    if last_given not in wl and len(last_given) >= 2 and last_given.endswith(DEPT_SUFFIXES):
         return None
 
     if last_family not in wl and len(last_family) >= 3 and last_family.endswith(DEPT_SUFFIXES):
+        return None
+
+    if len(last_family) > 12 or len(last_given) > 12:
         return None
 
     extracted_part = m.group(0)
@@ -251,49 +259,9 @@ def separate_contact_details(raw_contact: Any, extracted_fullname: str | None) -
         if m:
             title = kw
             temp_prefix = temp_prefix[:m.start()].strip(" 　")
-            if kw == "様":
-                break
 
     branch_dept = temp_prefix
     return (branch_dept, title, full_name)
-
-
-def join_address(addr1: Any, addr2: Any, addr3: Any) -> str:
-    parts = []
-    for x in (addr1, addr2, addr3):
-        t = safe_text(x).strip()
-        if t:
-            parts.append(t)
-    s = " ".join(parts)
-    s = re.sub(r"[\s\r\n\t　]+", " ", s).strip()
-    return s
-
-
-def split_building(full_addr: Any) -> tuple[str, str]:
-    s = safe_text(full_addr).strip()
-    if not s:
-        return ("", "")
-    s_no_space = re.sub(r"[\s　]+", "", s)
-
-    kw_pattern = "|".join(map(re.escape, BUILDING_KEYWORDS))
-    kw_regex = re.compile(f"(?:{kw_pattern})", re.IGNORECASE)
-
-    m1 = kw_regex.search(s_no_space)
-    if m1:
-        idx = m1.start()
-        base = s_no_space[:idx]
-        building = s_no_space[idx:]
-        return (base, building)
-
-    m2 = re.search(rf"(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)", s_no_space)
-    if m2:
-        return (m2.group(1).strip(), m2.group(2).strip())
-
-    m3 = re.search(r"(.*?丁目\d*(?:番地|番|号)?\d*)(.+)", s_no_space)
-    if m3:
-        return (m3.group(1).strip(), m3.group(2).strip())
-
-    return (s_no_space, "")
 
 
 def _norm_col_key(s: Any) -> str:
@@ -478,6 +446,97 @@ def _pick_prefer_hq(group: pd.DataFrame) -> pd.DataFrame:
     return group.iloc[[0]]
 
 
+def _norm_key_text(s: Any) -> str:
+    t = unicodedata.normalize("NFKC", safe_text(s))
+    t = re.sub(r"[\s　]+", "", t).strip()
+    return t
+
+
+def _is_buildingish(s: str) -> bool:
+    if not s:
+        return False
+    if any(k in s for k in BUILDING_KEYWORDS):
+        return True
+    if re.search(r"(?:\d{1,4}F|[０-９]{1,4}Ｆ|階|号室|室|F)\s*$", s):
+        return True
+    if "・" in s or "･" in s:
+        return True
+    if re.search(r"[A-Za-z]", s):
+        return True
+    if re.search(r"[ァ-ヶｦ-ﾟ]{3,}", s):
+        return True
+    return False
+
+
+def _addr_join_base(addr1: Any, addr2: Any) -> str:
+    a1 = safe_text(addr1).strip()
+    a2 = safe_text(addr2).strip()
+    if not a1 and not a2:
+        return ""
+    if a1 and a2:
+        return a1 + a2
+    return a1 or a2
+
+
+def _addr3_split_into_base_and_building(addr3: str) -> Tuple[str, str, bool]:
+    s = safe_text(addr3).strip()
+    if not s:
+        return ("", "", False)
+
+    s = re.sub(r"[ \t　]+", "", s)
+
+    has_blocklot = bool(re.search(r"(丁目|番地|番|号)|\d{1,4}" + HYPHEN + r"\d{1,4}", s))
+    has_two_go = len(re.findall(r"号", s)) >= 2
+    buildingish = _is_buildingish(s)
+
+    m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", s)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+        return (s, "", False)
+
+    m = re.match(rf"^(\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", s)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+        return (s, "", False)
+
+    m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", s)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+        return (s, "", False)
+
+    if buildingish and not has_blocklot:
+        return ("", s, False)
+
+    if has_two_go and has_blocklot and not any(k in s for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", s) and not re.search(r"[A-Za-z]", s):
+        return ("", s, True)
+
+    return (s, "", False)
+
+
 def _finalize_for_export(df_in: pd.DataFrame) -> pd.DataFrame:
     df = df_in.copy()
     base = df.get("住所１（番地まで）", "").map(safe_text)
@@ -490,15 +549,16 @@ def _finalize_for_export(df_in: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _norm_key_text(s: Any) -> str:
-    t = unicodedata.normalize("NFKC", safe_text(s))
-    t = re.sub(r"[\s　]+", "", t).strip()
-    return t
-
-
 def process_excel_bytes(input_bytes: bytes, input_filename: str, config: ProcessConfig) -> tuple[bytes, dict[str, Any]]:
     df_raw = _read_input(input_bytes, sheet_name=0)
     df, mapping = _build_canonical_columns(df_raw)
+
+    for c in ["ご担当者名", "住所１", "住所２", "住所３", "クライアント名"]:
+        df[c] = df[c].map(apply_kanji_conversion)
+
+    obj_cols = [c for c in df.columns if df[c].dtype == object]
+    for c in obj_cols:
+        df[c] = df[c].map(normalize_katakana_to_half)
 
     df["旧字メモ（氏名）"] = df["ご担当者名"].map(check_old_kanji)
     df["旧字メモ（住所）"] = (
@@ -506,22 +566,15 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     )
     df["旧字メモ（住所）"] = df["旧字メモ（住所）"].str.replace(r'(\s/\s){2,}', ' / ', regex=True).str.strip(' /')
 
-    for c in ["ご担当者名", "住所１", "住所２", "住所３"]:
-        df[c] = df[c].map(apply_kanji_conversion)
-
-    obj_cols = [c for c in df.columns if df[c].dtype == object]
-    for c in obj_cols:
-        df[c] = df[c].map(normalize_half_katakana_only)
-
     client_split = df["クライアント名"].map(split_client_and_dept)
-    df["_client_clean"] = client_split.map(lambda t: t[0])
-    df["_client_dept"] = client_split.map(lambda t: t[1])
+    df["_client_clean"] = client_split.map(lambda t: safe_text(t[0]).strip())
+    df["_client_dept"] = client_split.map(lambda t: safe_text(t[1]).strip())
 
     df["_client_raw"] = df["_client_clean"].map(safe_text)
-    df["_client_norm"] = df["_client_raw"].map(normalize_full_katakana_to_half)
+    df["_client_norm"] = df["_client_raw"].map(lambda x: _norm_key_text(x))
     df["_client_has_paren"] = df["_client_raw"].map(contains_parentheses_any_width)
 
-    df["_contact_raw"] = df["ご担当者名"].map(safe_text)
+    df["_contact_raw"] = df["ご担当者名"].map(strip_honorific_suffix)
     wl = config.surname_whitelist or set()
     df["抽出氏名"] = df["_contact_raw"].map(lambda x: extract_last_fullname(x, wl))
 
@@ -546,12 +599,18 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
     df["部署"] = df.apply(_dept_merge, axis=1)
 
-    df["住所連結（全文）"] = df.apply(lambda r: join_address(r["住所１"], r["住所２"], r["住所３"]), axis=1)
-    base_and_building = df["住所連結（全文）"].map(split_building)
-    df["住所１（番地まで）"] = base_and_building.map(lambda t: t[0])
-    df["住所２（建物名）"] = base_and_building.map(lambda t: t[1])
+    base0 = df.apply(lambda r: _addr_join_base(r["住所１"], r["住所２"]), axis=1).map(safe_text)
+    a3 = df["住所３"].map(safe_text)
 
-    df["_dedupe_addr"] = df["住所連結（全文）"].map(_norm_key_text)
+    split_res = a3.map(_addr3_split_into_base_and_building)
+    df["_addr3_to_base"] = split_res.map(lambda t: t[0])
+    df["_addr3_building"] = split_res.map(lambda t: t[1])
+    df["_addr3_ambiguous"] = split_res.map(lambda t: bool(t[2]))
+
+    df["住所１（番地まで）"] = (base0 + df["_addr3_to_base"].map(safe_text)).map(lambda x: re.sub(r"[ \t　]+", "", safe_text(x))).map(safe_text)
+    df["住所２（建物名）"] = df["_addr3_building"].map(lambda x: re.sub(r"[ \t　]+", "", safe_text(x))).map(safe_text)
+
+    df["_dedupe_addr"] = (df["住所１（番地まで）"].map(_norm_key_text) + "|" + df["住所２（建物名）"].map(_norm_key_text))
     df["_dedupe_client"] = df["_client_norm"].map(_norm_key_text)
     df["_dedupe_tanto"] = df["担当者名称"].map(_norm_key_text)
 
@@ -562,9 +621,15 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         .reset_index(drop=True)
     )
 
+    df_addr_amb = df[df["_addr3_ambiguous"]].copy()
+    if len(df_addr_amb) > 0:
+        df_addr_amb["理由"] = "住所3が番地/号の判定が曖昧（番地と部屋番が区別困難）"
+    df = df[~df["_addr3_ambiguous"]].copy()
+
     mask_tantou_placeholder = df["_contact_raw"].map(is_tantou_placeholder)
     df_tantou = df[mask_tantou_placeholder].copy()
-    df_tantou["理由"] = "氏名が『ご担当者／ご担当者様』表記"
+    if len(df_tantou) > 0:
+        df_tantou["理由"] = "氏名が『ご担当者／ご担当者様』表記"
     df_rest = df[~mask_tantou_placeholder].copy()
 
     valid_name_mask = df_rest["抽出氏名"].map(is_valid_fullname)
@@ -575,13 +640,13 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_extraction_failure = df_rest[~valid_name_mask & ~is_multi_mask].copy()
 
     if len(df_extraction_failure) > 0:
-        df_extraction_failure["理由"] = "氏名抽出不可（2語形式でない/組織名誤認/役職誤認/前置き過長/姓長すぎ）"
+        df_extraction_failure["理由"] = "氏名抽出不可（2語形式でない/組織名誤認/役職誤認/前置き過長/会社名混入/部署混入）"
 
     if len(df_multi_name_all) > 0:
         df_multi_name_all["理由"] = "複数名記号あり"
         df_multi_name = (
-            df_multi_name_all.sort_values(["_client_norm", "住所連結（全文）", "_contact_raw"])
-            .groupby("_client_norm", as_index=False, group_keys=False)
+            df_multi_name_all.sort_values(["_dedupe_client", "_dedupe_addr", "_contact_raw"])
+            .groupby("_dedupe_client", as_index=False, group_keys=False)
             .apply(_pick_prefer_hq)
             .reset_index(drop=True)
         )
@@ -589,7 +654,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_multi_name = df_multi_name_all
 
     client_nuniques = (
-        df_valid.groupby("抽出氏名")["_client_norm"]
+        df_valid.groupby("抽出氏名")["_dedupe_client"]
         .nunique(dropna=False)
         .reset_index(name="client_distinct")
     )
@@ -614,8 +679,8 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     )
 
     selected_by_client = (
-        selected_by_name.sort_values(["_client_norm", "_contact_raw", "抽出氏名"])
-        .groupby("_client_norm", as_index=False, group_keys=False)
+        selected_by_name.sort_values(["_dedupe_client", "_contact_raw", "抽出氏名"])
+        .groupby("_dedupe_client", as_index=False, group_keys=False)
         .apply(_pick_prefer_hq)
     )
 
@@ -637,6 +702,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_tantou_out = _finalize_for_export(df_tantou)
     df_extraction_failure_out = _finalize_for_export(df_extraction_failure)
     df_multi_name_out = _finalize_for_export(df_multi_name)
+    df_addr_amb_out = _finalize_for_export(df_addr_amb)
 
     export_cols_main = [
         "クライアント名",
@@ -696,12 +762,18 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_multi_name_out["理由"] = ""
     df_multi_name_out = df_multi_name_out[export_cols_check]
 
+    df_addr_amb_out = _ensure_export_base(df_addr_amb_out)
+    if "理由" not in df_addr_amb_out.columns:
+        df_addr_amb_out["理由"] = ""
+    df_addr_amb_out = df_addr_amb_out[export_cols_check]
+
     out_buf = BytesIO()
     with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
         df_main.to_excel(writer, sheet_name="送付対象", index=False)
         df_name_conflict_out.to_excel(writer, sheet_name="要確認（氏名重複）", index=False)
         df_paren_conflict_out.to_excel(writer, sheet_name="要確認（クライアント名括弧）", index=False)
         df_tantou_out.to_excel(writer, sheet_name="要確認（ご担当者表記）", index=False)
+        df_addr_amb_out.to_excel(writer, sheet_name="要確認（住所分割曖昧）", index=False)
         df_extraction_failure_out.to_excel(writer, sheet_name="除外（氏名抽出失敗）", index=False)
         df_multi_name_out.to_excel(writer, sheet_name="除外（複数名）", index=False)
 
@@ -709,13 +781,14 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         "app_version": config.app_version,
         "input_filename": input_filename,
         "rows_input": int(len(df_raw)),
-        "rows_after_dedupe": int(len(df)),
+        "rows_after_dedupe": int(len(df) + len(df_addr_amb)),
         "header_mapping": mapping,
         "counts": {
             "送付対象": int(len(df_main)),
             "要確認（氏名重複）": int(len(df_name_conflict_out)),
             "要確認（クライアント名括弧）": int(len(df_paren_conflict_out)),
             "要確認（ご担当者表記）": int(len(df_tantou_out)),
+            "要確認（住所分割曖昧）": int(len(df_addr_amb_out)),
             "除外（氏名抽出失敗）": int(len(df_extraction_failure_out)),
             "除外（複数名）": int(len(df_multi_name_out)),
         },
