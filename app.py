@@ -1,7 +1,6 @@
-import os
-
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import os
 
 import extract_greetings
 
@@ -81,7 +80,7 @@ footer { visibility: hidden; }
     if cfg.app_version:
         st.caption(f"Version: {cfg.app_version}")
 
-    st.info("経理提供のExcelファイルをアップロードしてください。処理は自動で行われます。")
+    st.info("経理提供のExcelファイルをアップロードしてください。")
 
     uploaded_file = st.file_uploader("Excelファイル（.xlsx）をアップロード", type=["xlsx"])
     if uploaded_file is None:
@@ -94,6 +93,10 @@ footer { visibility: hidden; }
         return
 
     if st.button("処理実行"):
+        st.session_state.pop("result_bytes", None)
+        st.session_state.pop("result_summary", None)
+        st.session_state.pop("result_filename", None)
+
         try:
             with st.spinner("処理を実行中..."):
                 out_bytes, summary = extract_greetings.process_excel_bytes(
@@ -103,20 +106,27 @@ footer { visibility: hidden; }
                 )
 
             ts = pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y%m%d")
-            st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
-            st.download_button(
-                label="📥 処理結果をダウンロード",
-                data=out_bytes,
-                file_name=f"挨拶状_送付対象_{ts}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+            out_name = f"挨拶状_送付対象_{ts}.xlsx"
 
-            with st.expander("処理サマリ", expanded=False):
-                st.json(summary)
+            st.session_state.result_bytes = out_bytes
+            st.session_state.result_summary = summary
+            st.session_state.result_filename = out_name
 
         except Exception as e:
             st.error(f"エラーが発生しました: {e}")
             st.exception(e)
+
+    if st.session_state.get("result_bytes") is not None:
+        st.success("処理が完了しました。以下のボタンからダウンロードしてください。")
+        st.download_button(
+            label="📥 処理結果をダウンロード",
+            data=st.session_state.result_bytes,
+            file_name=st.session_state.get("result_filename") or "result.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        with st.expander("処理サマリ", expanded=False):
+            st.json(st.session_state.get("result_summary") or {})
 
 
 if __name__ == "__main__":
