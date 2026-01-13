@@ -16,7 +16,9 @@ BUILDING_KEYWORDS = [
     "会館", "会舘", "センター", "ｾﾝﾀｰ", "オフィス", "ｵﾌｨｽ", "工場", "寮", "荘", "コート", "ｺｰﾄ",
     "ハウス", "ﾊｳｽ", "ホーム", "ﾎｰﾑ", "館", "庁舎", "棟", "ヒルズ", "ﾋﾙｽﾞ", "タウン", "ﾀｳﾝ",
 ]
-HYPHEN = r"[‐-‒–—―−－-]"
+
+DASH_CHARS = r"[‐-‒–—―−－ｰー－-]"
+HYPHEN = r"-"
 
 TITLE_KEYWORDS = [
     "代表取締役", "取締役", "執行役員", "監査役", "会長", "社長", "専務", "常務",
@@ -39,7 +41,7 @@ FULL_KATA_MAP = {
     "サ": "ｻ", "シ": "ｼ", "ス": "ｽ", "セ": "ｾ", "ソ": "ｿ",
     "タ": "ﾀ", "チ": "ﾁ", "ツ": "ﾂ", "テ": "ﾃ", "ト": "ﾄ",
     "ナ": "ﾅ", "ニ": "ﾆ", "ヌ": "ﾇ", "ネ": "ﾈ", "ノ": "ﾉ",
-    "ハ": "ﾊ", "ヒ": "ﾋ", "フ": "ﾌ", "ヘ": "ﾍ", "ホ": "ﾎ",
+    "ハ": "ﾊ", "ヒ": "ﾋﾞ" if False else "ﾋ", "フ": "ﾌ", "ヘ": "ﾍ", "ホ": "ﾎ",
     "マ": "ﾏ", "ミ": "ﾐ", "ム": "ﾑ", "メ": "ﾒ", "モ": "ﾓ",
     "ヤ": "ﾔ", "ユ": "ﾕ", "ヨ": "ﾖ",
     "ラ": "ﾗ", "リ": "ﾘ", "ル": "ﾙ", "レ": "ﾚ", "ロ": "ﾛ",
@@ -268,7 +270,7 @@ def _norm_col_key(s: Any) -> str:
     t = safe_text(s)
     t = t.replace(" ", "").replace("　", "")
     t = unicodedata.normalize("NFKC", t)
-    t = re.sub(r"[‐-‒–—―−－-]", "-", t)
+    t = re.sub(r"[‐-‒–—―－-]", "-", t)
     t = t.replace("_", "").replace("（", "(").replace("）", ")")
     t = t.replace("１", "1").replace("２", "2").replace("３", "3")
     t = t.replace("ｺｰﾄﾞ", "コード")
@@ -448,27 +450,38 @@ def _pick_prefer_hq(group: pd.DataFrame) -> pd.DataFrame:
 
 def _norm_key_text(s: Any) -> str:
     t = unicodedata.normalize("NFKC", safe_text(s))
-    t = re.sub(r"[‐-‒–—―−－-]", "-", t)
     t = re.sub(r"[\s　]+", "", t).strip()
+    t = re.sub(DASH_CHARS, "-", t)
     return t
 
 
-def _normalize_hyphens_text(s: Any) -> str:
-    return re.sub(r"[‐-‒–—―−－-]", "-", safe_text(s))
+def _sanitize_addr_text(s: Any) -> str:
+    t = safe_text(s)
+    if not t:
+        return ""
+    t = unicodedata.normalize("NFKC", t)
+    t = t.replace("\u0000", "")
+    t = re.sub(r"[\r\n\t]", "", t)
+    t = re.sub(r"[\x00-\x1f\x7f]", "", t)
+    t = re.sub(DASH_CHARS, "-", t)
+    t = t.replace("‐", "-").replace("-", "-").replace("‒", "-").replace("–", "-").replace("—", "-").replace("―", "-").replace("−", "-").replace("－", "-").replace("ｰ", "-").replace("ー", "-")
+    t = t.replace("　", " ").strip()
+    t = re.sub(r"[ ]+", " ", t)
+    return t
 
 
 def _compact(s: Any) -> str:
-    t = _normalize_hyphens_text(s)
-    return re.sub(r"[ \t　]+", "", t).strip()
+    t = _sanitize_addr_text(s)
+    t = re.sub(r"[ \t　]+", "", t)
+    return t.strip()
 
 
 def _contains_blocklot(s: str) -> bool:
     if not s:
         return False
-    t = _compact(s)
-    if re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", t):
+    if re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", s):
         return True
-    if re.search(r"(丁目|番地|番)", t):
+    if re.search(r"(丁目|番地|番|号)", s):
         return True
     return False
 
@@ -476,18 +489,23 @@ def _contains_blocklot(s: str) -> bool:
 def _is_buildingish(s: str) -> bool:
     if not s:
         return False
-    t = _compact(s)
-    if any(k in t for k in BUILDING_KEYWORDS):
+    if any(k in s for k in BUILDING_KEYWORDS):
         return True
-    if re.search(r"(?:\d{1,4}F|[０-９]{1,4}Ｆ|階)\s*$", t):
+    if re.search(r"(?:地下?\d{1,3}階|B\d{1,3}F|B\d{1,3}Ｆ)\s*$", s):
         return True
-    if re.search(r"(?:\d{1,5}(?:号室|号|室))\s*$", t):
+    if re.search(r"(?:\d{1,4}F|\d{1,4}Ｆ|[０-９]{1,4}Ｆ|階)\s*$", s):
         return True
-    if "・" in t or "･" in t:
+    if re.search(r"(?:\d{1,5}(?:号室|号|室))\s*$", s):
         return True
-    if re.search(r"[A-Za-z]", t):
+    if re.search(r"(?:内|構内|団地内|工業団地|国有林|小班内|附属棟|旅客|ターミナル)\s*$", s):
         return True
-    if re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t):
+    if "・" in s or "･" in s:
+        return True
+    if re.search(r"[A-Za-z]", s):
+        return True
+    if re.search(r"[ァ-ヶｦ-ﾟ]{3,}", s):
+        return True
+    if re.search(r"[一-龥]{2,}.*(?:内|構内|団地|工業団地)", s):
         return True
     return False
 
@@ -503,8 +521,7 @@ def _addr_join(a: Any, b: Any) -> str:
 
 
 def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool]:
-    t = _compact(s)
-    m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", t)
+    m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", s)
     if not m:
         return ("", "", False)
     prefix = m.group(1) or ""
@@ -541,6 +558,42 @@ def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool]:
     return (base, bld, True)
 
 
+def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
+    if not t:
+        return ("", "", False)
+
+    m = re.match(rf"^(.+?\d{{1,4}}(?:{HYPHEN}\d{{1,4}}){{1,3}})(.+)$", t)
+    if m:
+        base = m.group(1).strip()
+        rest = m.group(2).strip()
+        if rest and _is_buildingish(rest):
+            return (base, rest, False)
+
+    m = re.match(r"^(.+?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
+    if m:
+        base = m.group(1).strip()
+        rest = m.group(2).strip()
+        if rest and _is_buildingish(rest):
+            has_two_go = len(re.findall(r"号", t)) >= 2
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (base, rest, amb)
+
+    m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
+    if m:
+        base = m.group(1).strip()
+        rest = m.group(2).strip()
+        if rest and _is_buildingish(rest):
+            has_two_go = len(re.findall(r"号", t)) >= 2
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (base, rest, amb)
+
+    return ("", "", False)
+
+
 def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     t = _compact(s)
     if not t:
@@ -550,52 +603,61 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     if did and bld:
         return (base, bld, False)
 
-    has_two_go = len(re.findall(r"号", t)) >= 2
+    if _is_buildingish(t) and (any(k in t for k in BUILDING_KEYWORDS) or re.search(r"[A-Za-z]", t) or re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) or re.search(r"(?:\d{1,4}F|\d{1,4}Ｆ|階|地下|号室)", t) or re.search(r"(?:内|構内|団地内|工業団地|国有林|小班内|附属棟|旅客|ターミナル)$", t)):
+        if not re.search(rf"^\d{{1,4}}(?:{HYPHEN}\d{{1,4}}){{1,3}}$", t):
+            return ("", t, False)
 
-    def _post_check(prefix: str, rest: str) -> Tuple[str, str, bool]:
-        prefix = _compact(prefix)
-        rest = _compact(rest)
+    b_base, b_bld, b_did = _split_by_blocklot_then_building(t)
+    if b_did and (b_base or b_bld):
+        return (b_base, b_bld, False)
+
+    has_blocklot = bool(re.search(r"(丁目|番地|番|号)|\d{1,4}" + HYPHEN + r"\d{1,4}", t))
+    has_two_go = len(re.findall(r"号", t)) >= 2
+    buildingish = _is_buildingish(t)
+
+    m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
         if not rest:
             return (prefix, "", False)
         if _is_buildingish(rest):
             amb = False
             if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
                 amb = True
-            if re.fullmatch(r"\d{1,6}", rest):
-                return (t, "", False)
-            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
-                return (prefix, rest, True)
             return (prefix, rest, amb)
         return (t, "", False)
 
-    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}{HYPHEN}\d{{1,4}})(.+)$", t)
+    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
     if m:
-        return _post_check(m.group(1) or "", m.group(2) or "")
-
-    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}})(.+)$", t)
-    if m:
-        rest0 = m.group(2) or ""
-        if not re.match(rf"^{HYPHEN}\d", rest0):
-            return _post_check(m.group(1) or "", rest0)
-
-    m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
-    if m:
-        return _post_check(m.group(1) or "", m.group(2) or "")
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+        return (t, "", False)
 
     m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
     if m:
-        return _post_check(m.group(1) or "", m.group(2) or "")
-
-    has_hyphen_block = bool(re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", t))
-    has_numbered_block = bool(re.search(r"\d{1,4}(?:丁目|番地|番|号)", t))
-
-    if any(k in t for k in BUILDING_KEYWORDS) and not has_hyphen_block and not has_numbered_block:
-        return ("", t, False)
-
-    buildingish = _is_buildingish(t)
-    has_blocklot = bool(re.search(r"(丁目|番地|番)", t)) or has_hyphen_block
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+        return (t, "", False)
 
     if buildingish and not has_blocklot:
+        return ("", t, False)
+
+    if buildingish and has_blocklot and any(k in t for k in BUILDING_KEYWORDS):
         return ("", t, False)
 
     if has_two_go and has_blocklot and not any(k in t for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) and not re.search(r"[A-Za-z]", t):
