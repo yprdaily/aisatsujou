@@ -16,7 +16,7 @@ BUILDING_KEYWORDS = [
     "会館", "会舘", "センター", "ｾﾝﾀｰ", "オフィス", "ｵﾌｨｽ", "工場", "寮", "荘", "コート", "ｺｰﾄ",
     "ハウス", "ﾊｳｽ", "ホーム", "ﾎｰﾑ", "館", "庁舎", "棟", "ヒルズ", "ﾋﾙｽﾞ", "タウン", "ﾀｳﾝ",
 ]
-HYPHEN = r"[－-]"
+HYPHEN = r"[‐-‒–—―−－-]"
 
 TITLE_KEYWORDS = [
     "代表取締役", "取締役", "執行役員", "監査役", "会長", "社長", "専務", "常務",
@@ -268,7 +268,7 @@ def _norm_col_key(s: Any) -> str:
     t = safe_text(s)
     t = t.replace(" ", "").replace("　", "")
     t = unicodedata.normalize("NFKC", t)
-    t = re.sub(r"[‐-‒–—―－-]", "-", t)
+    t = re.sub(r"[‐-‒–—―−－-]", "-", t)
     t = t.replace("_", "").replace("（", "(").replace("）", ")")
     t = t.replace("１", "1").replace("２", "2").replace("３", "3")
     t = t.replace("ｺｰﾄﾞ", "コード")
@@ -448,20 +448,27 @@ def _pick_prefer_hq(group: pd.DataFrame) -> pd.DataFrame:
 
 def _norm_key_text(s: Any) -> str:
     t = unicodedata.normalize("NFKC", safe_text(s))
+    t = re.sub(r"[‐-‒–—―−－-]", "-", t)
     t = re.sub(r"[\s　]+", "", t).strip()
     return t
 
 
+def _normalize_hyphens_text(s: Any) -> str:
+    return re.sub(r"[‐-‒–—―−－-]", "-", safe_text(s))
+
+
 def _compact(s: Any) -> str:
-    return re.sub(r"[ \t　]+", "", safe_text(s)).strip()
+    t = _normalize_hyphens_text(s)
+    return re.sub(r"[ \t　]+", "", t).strip()
 
 
 def _contains_blocklot(s: str) -> bool:
     if not s:
         return False
-    if re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", s):
+    t = _compact(s)
+    if re.search(rf"\d{{1,4}}{HYPHEN}\d{{1,4}}", t):
         return True
-    if re.search(r"(丁目|番地|番)", s):
+    if re.search(r"(丁目|番地|番)", t):
         return True
     return False
 
@@ -469,17 +476,18 @@ def _contains_blocklot(s: str) -> bool:
 def _is_buildingish(s: str) -> bool:
     if not s:
         return False
-    if any(k in s for k in BUILDING_KEYWORDS):
+    t = _compact(s)
+    if any(k in t for k in BUILDING_KEYWORDS):
         return True
-    if re.search(r"(?:\d{1,4}F|[０-９]{1,4}Ｆ|階)\s*$", s):
+    if re.search(r"(?:\d{1,4}F|[０-９]{1,4}Ｆ|階)\s*$", t):
         return True
-    if re.search(r"(?:\d{1,5}(?:号室|号|室))\s*$", s):
+    if re.search(r"(?:\d{1,5}(?:号室|号|室))\s*$", t):
         return True
-    if "・" in s or "･" in s:
+    if "・" in t or "･" in t:
         return True
-    if re.search(r"[A-Za-z]", s):
+    if re.search(r"[A-Za-z]", t):
         return True
-    if re.search(r"[ァ-ヶｦ-ﾟ]{3,}", s):
+    if re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t):
         return True
     return False
 
@@ -495,7 +503,8 @@ def _addr_join(a: Any, b: Any) -> str:
 
 
 def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool]:
-    m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", s)
+    t = _compact(s)
+    m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", t)
     if not m:
         return ("", "", False)
     prefix = m.group(1) or ""
@@ -541,9 +550,25 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     if did and bld:
         return (base, bld, False)
 
-    has_blocklot = bool(re.search(r"(丁目|番地|番)|\d{1,4}" + HYPHEN + r"\d{1,4}", t))
+    has_blocklot = bool(re.search(rf"(丁目|番地|番)|\d{{1,4}}{HYPHEN}\d{{1,4}}", t))
     has_two_go = len(re.findall(r"号", t)) >= 2
-    buildingish = _is_buildingish(t)
+
+    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
+    if m:
+        prefix = (m.group(1) or "").strip()
+        rest = (m.group(2) or "").strip()
+        if not rest:
+            return (prefix, "", False)
+        if _is_buildingish(rest):
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            if re.fullmatch(r"\d{1,6}", rest):
+                return (t, "", False)
+            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
+                return (prefix, rest, True)
+            return (prefix, rest, amb)
+        return (t, "", False)
 
     m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
     if m:
@@ -555,19 +580,10 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
             amb = False
             if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
                 amb = True
-            return (prefix, rest, amb)
-        return (t, "", False)
-
-    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
-    if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
+            if re.fullmatch(r"\d{1,6}", rest):
+                return (t, "", False)
+            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
+                return (prefix, rest, True)
             return (prefix, rest, amb)
         return (t, "", False)
 
@@ -581,8 +597,14 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
             amb = False
             if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
                 amb = True
+            if re.fullmatch(r"\d{1,6}", rest):
+                return (t, "", False)
+            if re.fullmatch(r"\d{1,5}号$", rest) and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[A-Za-z]", rest) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest):
+                return (prefix, rest, True)
             return (prefix, rest, amb)
         return (t, "", False)
+
+    buildingish = _is_buildingish(t)
 
     if buildingish and not has_blocklot:
         return ("", t, False)
