@@ -520,16 +520,22 @@ def _addr_join(a: Any, b: Any) -> str:
     return a1 or b1
 
 
-def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool]:
+def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool, bool]:
+    m = re.search(rf"(\d{{1,4}}(?:{HYPHEN}\d{{1,4}})+){HYPHEN}(\d{{1,4}}[FＦ階].*)$", s)
+    if m:
+        return (m.group(1), m.group(2), True, False)
+
     m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", s)
     if not m:
-        return ("", "", False)
+        return ("", "", False, False)
+
     prefix = m.group(1) or ""
     a = m.group(2)
     b = m.group(3)
     c = m.group(4)
     ff = m.group(5)
     tail = m.group(6) or ""
+
     best = None
     for cut in range(1, len(c)):
         head = c[:cut]
@@ -550,12 +556,14 @@ def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool]:
             b_floor = int(best[1])
             if floor_i <= b_floor:
                 best = cand
+
     if best is None:
-        return ("", "", False)
+        return ("", "", False, False)
+
     head, floor = best
     base = f"{prefix}{a}-{b}-{head}"
     bld = f"{floor}{ff}{tail}"
-    return (base, bld, True)
+    return (base, bld, True, True)
 
 
 def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
@@ -566,30 +574,27 @@ def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        if rest and _is_buildingish(rest):
-            return (base, rest, False)
+        return (base, rest, False)
 
     m = re.match(r"^(.+?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        if rest and _is_buildingish(rest):
-            has_two_go = len(re.findall(r"号", t)) >= 2
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            return (base, rest, amb)
+        has_two_go = len(re.findall(r"号", t)) >= 2
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (base, rest, amb)
 
     m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        if rest and _is_buildingish(rest):
-            has_two_go = len(re.findall(r"号", t)) >= 2
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            return (base, rest, amb)
+        has_two_go = len(re.findall(r"号", t)) >= 2
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (base, rest, amb)
 
     return ("", "", False)
 
@@ -599,13 +604,9 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
     if not t:
         return ("", "", False)
 
-    base, bld, did = _split_last_segment_floor_three_hyphen(t)
+    base, bld, did, amb_regex = _split_last_segment_floor_three_hyphen(t)
     if did and bld:
-        return (base, bld, False)
-
-    if _is_buildingish(t) and (any(k in t for k in BUILDING_KEYWORDS) or re.search(r"[A-Za-z]", t) or re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) or re.search(r"(?:\d{1,4}F|\d{1,4}Ｆ|階|地下|号室)", t) or re.search(r"(?:内|構内|団地内|工業団地|国有林|小班内|附属棟|旅客|ターミナル)$", t)):
-        if not re.search(rf"^\d{{1,4}}(?:{HYPHEN}\d{{1,4}}){{1,3}}$", t):
-            return ("", t, False)
+        return (base, bld, amb_regex)
 
     b_base, b_bld, b_did = _split_by_blocklot_then_building(t)
     if b_did and (b_base or b_bld):
@@ -621,12 +622,10 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         rest = m.group(2).strip()
         if not rest:
             return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            return (prefix, rest, amb)
-        return (t, "", False)
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (prefix, rest, amb)
 
     m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
     if m:
@@ -634,12 +633,10 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         rest = m.group(2).strip()
         if not rest:
             return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            return (prefix, rest, amb)
-        return (t, "", False)
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (prefix, rest, amb)
 
     m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
     if m:
@@ -647,17 +644,12 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         rest = m.group(2).strip()
         if not rest:
             return (prefix, "", False)
-        if _is_buildingish(rest):
-            amb = False
-            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-                amb = True
-            return (prefix, rest, amb)
-        return (t, "", False)
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (prefix, rest, amb)
 
     if buildingish and not has_blocklot:
-        return ("", t, False)
-
-    if buildingish and has_blocklot and any(k in t for k in BUILDING_KEYWORDS):
         return ("", t, False)
 
     if has_two_go and has_blocklot and not any(k in t for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) and not re.search(r"[A-Za-z]", t):
@@ -837,6 +829,20 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         .apply(_pick_prefer_hq)
     )
 
+    is_hr = selected_by_client["部門"].map(safe_text).str.contains(r"(人材|派遣)", na=False, regex=True)
+    df_hr = selected_by_client[is_hr].copy()
+    if len(df_hr) > 0:
+        df_hr["理由"] = "除外（人材派遣関連部門）"
+    
+    selected_by_client = selected_by_client[~is_hr].copy()
+
+    is_agency = selected_by_client["部門"].map(safe_text).str.contains(r"代理店", na=False)
+    df_agency = selected_by_client[is_agency].copy()
+    if len(df_agency) > 0:
+        df_agency["理由"] = "要確認（代理店部/許可リスト判定待ち）"
+
+    selected_by_client = selected_by_client[~is_agency].copy()
+
     def _split_name(x: Any) -> tuple[str, str]:
         t = safe_text(x)
         if "　" in t:
@@ -856,6 +862,8 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_extraction_failure_out = _finalize_for_export(df_extraction_failure)
     df_multi_name_out = _finalize_for_export(df_multi_name)
     df_addr_amb_out = _finalize_for_export(df_addr_amb)
+    df_hr_out = _finalize_for_export(df_hr)
+    df_agency_out = _finalize_for_export(df_agency)
 
     export_cols_main = [
         "クライアント名",
@@ -920,13 +928,25 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_addr_amb_out["理由"] = ""
     df_addr_amb_out = df_addr_amb_out[export_cols_check]
 
+    df_hr_out = _ensure_export_base(df_hr_out)
+    if "理由" not in df_hr_out.columns:
+        df_hr_out["理由"] = ""
+    df_hr_out = df_hr_out[export_cols_check]
+
+    df_agency_out = _ensure_export_base(df_agency_out)
+    if "理由" not in df_agency_out.columns:
+        df_agency_out["理由"] = ""
+    df_agency_out = df_agency_out[export_cols_check]
+
     out_buf = BytesIO()
     with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
         df_main.to_excel(writer, sheet_name="送付対象", index=False)
+        df_agency_out.to_excel(writer, sheet_name="要確認（代理店部）", index=False)
         df_name_conflict_out.to_excel(writer, sheet_name="要確認（氏名重複）", index=False)
         df_paren_conflict_out.to_excel(writer, sheet_name="要確認（クライアント名括弧）", index=False)
         df_tantou_out.to_excel(writer, sheet_name="要確認（ご担当者表記）", index=False)
         df_addr_amb_out.to_excel(writer, sheet_name="要確認（住所分割曖昧）", index=False)
+        df_hr_out.to_excel(writer, sheet_name="除外（人材派遣）", index=False)
         df_extraction_failure_out.to_excel(writer, sheet_name="除外（氏名抽出失敗）", index=False)
         df_multi_name_out.to_excel(writer, sheet_name="除外（複数名）", index=False)
 
@@ -938,10 +958,12 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         "header_mapping": mapping,
         "counts": {
             "送付対象": int(len(df_main)),
+            "要確認（代理店部）": int(len(df_agency_out)),
             "要確認（氏名重複）": int(len(df_name_conflict_out)),
             "要確認（クライアント名括弧）": int(len(df_paren_conflict_out)),
             "要確認（ご担当者表記）": int(len(df_tantou_out)),
             "要確認（住所分割曖昧）": int(len(df_addr_amb_out)),
+            "除外（人材派遣）": int(len(df_hr_out)),
             "除外（氏名抽出失敗）": int(len(df_extraction_failure_out)),
             "除外（複数名）": int(len(df_multi_name_out)),
         },
