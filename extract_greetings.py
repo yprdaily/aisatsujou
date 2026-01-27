@@ -520,10 +520,25 @@ def _addr_join(a: Any, b: Any) -> str:
     return a1 or b1
 
 
+def _is_valid_bld(s: str) -> bool:
+    if not s:
+        return False
+    if re.fullmatch(r"[\d\-‐]+", s):
+        return False
+    if re.fullmatch(r"[FＦ階号室]+", s):
+        return False
+    if len(s) <= 1 and not s.isdigit():
+        return False
+    return True
+
+
 def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool, bool]:
     m = re.search(rf"(\d{{1,4}}(?:{HYPHEN}\d{{1,4}})+){HYPHEN}(\d{{1,4}}[FＦ階].*)$", s)
     if m:
-        return (m.group(1), m.group(2), True, False)
+        base = m.group(1)
+        bld = m.group(2)
+        if _is_valid_bld(bld):
+            return (base, bld, True, False)
 
     m = re.match(rf"^(.*?)(\d{{1,4}}){HYPHEN}(\d{{1,4}}){HYPHEN}(\d{{2,4}})([FＦ])(.+)?$", s)
     if not m:
@@ -563,24 +578,24 @@ def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool, bool
     head, floor = best
     base = f"{prefix}{a}-{b}-{head}"
     bld = f"{floor}{ff}{tail}"
+    
+    if not _is_valid_bld(bld):
+        return ("", "", False, False)
+
     return (base, bld, True, True)
 
 
 def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
-    # スペース区切りを最優先で試す
+    # スペース分割（住所1が数字で終わっている場合のみ）
     if " " in s or "　" in s:
-        parts = re.split(r"[ 　]+", s.strip())
-        if len(parts) >= 2:
-            base = parts[0]
-            bld = " ".join(parts[1:])
-            # 後半が建物っぽい、または数字+文字を含んでいる場合は採用
-            if _is_buildingish(bld) or re.search(r"\d", bld):
+        # 正規表現： (末尾が数字の文字列) + スペース + (残り)
+        m_space = re.match(r"^(.+?[\d])[ 　]+(.+)$", s.strip())
+        if m_space:
+            base = m_space.group(1)
+            bld = m_space.group(2)
+            # 後半が有効な建物情報かチェック（数字のみはNG）
+            if _is_valid_bld(bld):
                 return (base, bld, False)
-            # 後半がただの数字ハイフンのみの場合、スペースがあっても分割しない（番地の一部とみなす）
-            if re.fullmatch(r"[\d\-]+", bld):
-                pass 
-            else:
-                 return (base, bld, False)
 
     t = _compact(s)
     if not t:
@@ -588,15 +603,14 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
 
     base, bld, did, amb_regex = _split_last_segment_floor_three_hyphen(t)
     if did and bld:
-        # 分離した後半が「階」「号」などの単独文字、または極端に短い非数字なら結合に戻す
-        if re.fullmatch(r"[FＦ階号室]+", bld) or (len(bld) <= 1 and not bld.isdigit()):
+        if not _is_valid_bld(bld):
             pass
         else:
             return (base, bld, amb_regex)
 
     b_base, b_bld, b_did = _split_by_blocklot_then_building(t)
     if b_did and (b_base or b_bld):
-        if re.fullmatch(r"[FＦ階号室]+", b_bld) or (len(b_bld) <= 1 and not b_bld.isdigit()):
+        if not _is_valid_bld(b_bld):
             pass
         else:
             return (b_base, b_bld, False)
@@ -612,17 +626,13 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         if not rest:
             return (prefix, "", False)
         
-        # 後半が数字ハイフンのみなら分割しない
-        if re.fullmatch(r"^[0-9\-‐]+$", rest):
+        if not _is_valid_bld(rest):
             pass
         else:
             amb = False
             if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
                 amb = True
-            if re.fullmatch(r"[FＦ階号室]+", rest):
-                pass
-            else:
-                return (prefix, rest, amb)
+            return (prefix, rest, amb)
 
     m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
     if m:
@@ -631,17 +641,13 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         if not rest:
             return (prefix, "", False)
         
-        # 後半が数字ハイフンのみなら分割しない
-        if re.fullmatch(r"^[0-9\-‐]+$", rest):
+        if not _is_valid_bld(rest):
             pass
         else:
             amb = False
             if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
                 amb = True
-            if re.fullmatch(r"[FＦ階号室]+", rest):
-                pass
-            else:
-                return (prefix, rest, amb)
+            return (prefix, rest, amb)
 
     m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
     if m:
@@ -653,7 +659,7 @@ def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
         if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
             amb = True
         
-        if re.fullmatch(r"[FＦ階号室]+", rest):
+        if not _is_valid_bld(rest):
             pass
         else:
             return (prefix, rest, amb)
@@ -675,8 +681,7 @@ def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        # 後半が数字のみなら分割キャンセル
-        if re.fullmatch(r"[\d\-]+", rest):
+        if not _is_valid_bld(rest):
             return ("", "", False)
         return (base, rest, False)
 
@@ -684,7 +689,7 @@ def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        if re.fullmatch(r"[\d\-]+", rest):
+        if not _is_valid_bld(rest):
             return ("", "", False)
 
         has_two_go = len(re.findall(r"号", t)) >= 2
@@ -697,7 +702,7 @@ def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
     if m:
         base = m.group(1).strip()
         rest = m.group(2).strip()
-        if re.fullmatch(r"[\d\-]+", rest):
+        if not _is_valid_bld(rest):
             return ("", "", False)
 
         has_two_go = len(re.findall(r"号", t)) >= 2
@@ -719,14 +724,12 @@ def _finalize_for_export(df_in: pd.DataFrame) -> pd.DataFrame:
     df["住所２"] = bld
     df["住所３"] = ""
     
-    # 元データの復元（確認用）
     df["元データ（住所）"] = (
         df.get("住所１_raw", "").map(safe_text) + 
         df.get("住所２_raw", "").map(safe_text) + 
         df.get("住所３_raw", "").map(safe_text)
     )
     
-    # 検証列の追加
     def _verify(row):
         orig = _compact(row["元データ（住所）"])
         curr = _compact(row["住所１"] + row["住所２"])
@@ -743,7 +746,6 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_raw = _read_input(input_bytes, sheet_name=0)
     df, mapping = _build_canonical_columns(df_raw)
 
-    # 元データを保持（検証用）
     df["住所１_raw"] = df["住所１"].copy()
     df["住所２_raw"] = df["住所２"].copy()
     df["住所３_raw"] = df["住所３"].copy()
