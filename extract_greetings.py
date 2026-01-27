@@ -566,6 +566,73 @@ def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool, bool
     return (base, bld, True, True)
 
 
+def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
+    t = _compact(s)
+    if not t:
+        return ("", "", False)
+
+    base, bld, did, amb_regex = _split_last_segment_floor_three_hyphen(t)
+    if did and bld:
+        return (base, bld, amb_regex)
+
+    b_base, b_bld, b_did = _split_by_blocklot_then_building(t)
+    if b_did and (b_base or b_bld):
+        return (b_base, b_bld, False)
+
+    has_blocklot = bool(re.search(r"(丁目|番地|番|号)|\d{1,4}" + HYPHEN + r"\d{1,4}", t))
+    has_two_go = len(re.findall(r"号", t)) >= 2
+    buildingish = _is_buildingish(t)
+
+    m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        
+        if re.fullmatch(r"^[0-9\-‐]+$", rest):
+            pass
+        else:
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+
+    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        
+        if re.fullmatch(r"^[0-9\-‐]+$", rest):
+            pass
+        else:
+            amb = False
+            if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+                amb = True
+            return (prefix, rest, amb)
+
+    m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
+    if m:
+        prefix = m.group(1).strip()
+        rest = m.group(2).strip()
+        if not rest:
+            return (prefix, "", False)
+        amb = False
+        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
+            amb = True
+        return (prefix, rest, amb)
+
+    if buildingish and not has_blocklot:
+        return ("", t, False)
+
+    if has_two_go and has_blocklot and not any(k in t for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) and not re.search(r"[A-Za-z]", t):
+        return ("", t, True)
+
+    return (t, "", False)
+
+
 def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
     if not t:
         return ("", "", False)
@@ -597,65 +664,6 @@ def _split_by_blocklot_then_building(t: str) -> Tuple[str, str, bool]:
         return (base, rest, amb)
 
     return ("", "", False)
-
-
-def _split_base_building_general(s: str) -> Tuple[str, str, bool]:
-    t = _compact(s)
-    if not t:
-        return ("", "", False)
-
-    base, bld, did, amb_regex = _split_last_segment_floor_three_hyphen(t)
-    if did and bld:
-        return (base, bld, amb_regex)
-
-    b_base, b_bld, b_did = _split_by_blocklot_then_building(t)
-    if b_did and (b_base or b_bld):
-        return (b_base, b_bld, False)
-
-    has_blocklot = bool(re.search(r"(丁目|番地|番|号)|\d{1,4}" + HYPHEN + r"\d{1,4}", t))
-    has_two_go = len(re.findall(r"号", t)) >= 2
-    buildingish = _is_buildingish(t)
-
-    m = re.match(r"^([^\s　]*?\d{1,4}番(?:地)?\d{1,4}号)(.+)$", t)
-    if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        amb = False
-        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-            amb = True
-        return (prefix, rest, amb)
-
-    m = re.match(rf"^(.+?\d{{1,4}}{HYPHEN}\d{{1,4}}(?:{HYPHEN}\d{{1,4}})?)(.+)$", t)
-    if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        amb = False
-        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-            amb = True
-        return (prefix, rest, amb)
-
-    m = re.match(r"^([一二三四五六七八九十百千0-9]+丁目[一二三四五六七八九十百千0-9]+(?:番地|番)?[一二三四五六七八九十百千0-9]+号?)(.+)$", t)
-    if m:
-        prefix = m.group(1).strip()
-        rest = m.group(2).strip()
-        if not rest:
-            return (prefix, "", False)
-        amb = False
-        if has_two_go and not any(k in rest for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", rest) and not re.search(r"[A-Za-z]", rest):
-            amb = True
-        return (prefix, rest, amb)
-
-    if buildingish and not has_blocklot:
-        return ("", t, False)
-
-    if has_two_go and has_blocklot and not any(k in t for k in BUILDING_KEYWORDS) and not re.search(r"[ァ-ヶｦ-ﾟ]{3,}", t) and not re.search(r"[A-Za-z]", t):
-        return ("", t, True)
-
-    return (t, "", False)
 
 
 def _finalize_for_export(df_in: pd.DataFrame) -> pd.DataFrame:
@@ -886,8 +894,16 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
             x["部署"] = ""
         if "肩書" not in x.columns:
             x["肩書"] = ""
-        if "送付氏名（姓　名）" not in x.columns:
-            x["送付氏名（姓　名）"] = x.get("抽出氏名（クリーン）", x.get("抽出氏名", "")).map(safe_text)
+
+        def _fill_name(r):
+            if safe_text(r.get("抽出氏名（クリーン）", "")):
+                return r["抽出氏名（クリーン）"]
+            if safe_text(r.get("抽出氏名", "")):
+                return r["抽出氏名"]
+            return strip_honorific_suffix(r.get("ご担当者名", ""))
+
+        x["送付氏名（姓　名）"] = x.apply(_fill_name, axis=1)
+
         for c in ["姓", "名", "郵便番号", "電話番号", "旧字メモ（氏名）", "旧字メモ（住所）"]:
             if c not in x.columns:
                 x[c] = ""
@@ -950,9 +966,13 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_extraction_failure_out.to_excel(writer, sheet_name="除外（氏名抽出失敗）", index=False)
         df_multi_name_out.to_excel(writer, sheet_name="除外（複数名）", index=False)
 
+    base_name = os.path.splitext(os.path.basename(input_filename))[0]
+    output_filename = f"{base_name}_抽出結果.xlsx"
+
     summary = {
         "app_version": config.app_version,
         "input_filename": input_filename,
+        "output_filename": output_filename,
         "rows_input": int(len(df_raw)),
         "rows_after_dedupe": int(len(df) + len(df_addr_amb)),
         "header_mapping": mapping,
