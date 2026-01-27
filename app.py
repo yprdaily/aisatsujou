@@ -105,8 +105,7 @@ footer { visibility: hidden; }
                     config=cfg,
                 )
 
-            ts = pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y%m%d")
-            out_name = f"挨拶状_送付対象_{ts}.xlsx"
+            out_name = summary.get("output_filename", "result.xlsx")
 
             st.session_state.result_bytes = out_bytes
             st.session_state.result_summary = summary

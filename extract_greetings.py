@@ -884,6 +884,8 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         "電話番号",
         "旧字メモ（氏名）",
         "旧字メモ（住所）",
+        "担当者名称",
+        "部門",
     ]
     export_cols_check = ["理由"] + export_cols_main
 
@@ -904,7 +906,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
         x["送付氏名（姓　名）"] = x.apply(_fill_name, axis=1)
 
-        for c in ["姓", "名", "郵便番号", "電話番号", "旧字メモ（氏名）", "旧字メモ（住所）"]:
+        for c in ["姓", "名", "郵便番号", "電話番号", "旧字メモ（氏名）", "旧字メモ（住所）", "担当者名称", "部門"]:
             if c not in x.columns:
                 x[c] = ""
         for c in ["住所１", "住所２", "住所３", "住所（全文）"]:
@@ -967,7 +969,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_multi_name_out.to_excel(writer, sheet_name="除外（複数名）", index=False)
 
     base_name = os.path.splitext(os.path.basename(input_filename))[0]
-    output_filename = f"{base_name}_抽出結果.xlsx"
+    output_filename = f"{base_name}_処理済み.xlsx"
 
     summary = {
         "app_version": config.app_version,
