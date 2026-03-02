@@ -17,7 +17,9 @@ BUILDING_KEYWORDS = [
     "ハウス", "ﾊｳｽ", "ホーム", "ﾎｰﾑ", "館", "庁舎", "棟", "ヒルズ", "ﾋﾙｽﾞ", "タウン", "ﾀｳﾝ",
 ]
 
-DASH_CHARS = r"[‐-‒–—―−－ｰ－-]"
+# NOTE: ｰ (half-width katakana prolonged sound mark) is intentionally excluded
+# so that "ｾﾝﾀｰ" etc. are NOT converted to hyphens.
+DASH_CHARS = r"[‐‒–—―−－－-]"
 HYPHEN = r"-"
 
 TITLE_KEYWORDS = [
@@ -51,8 +53,9 @@ FULL_KATA_MAP = {
     "、": "､", "。": "｡", "ー": "ｰ", "「": "｢", "」": "｣", "・": "･",
 }
 
+# ･ (half-width middle dot) is included because ・ normalizes to ･ after katakana conversion
 MULTI_NAME_PATTERNS = [
-    r"[、，,・/／＆&＋+]", r"\b(?:と|and|AND|＆)\b",
+    r"[、，,・･/／＆&＋+]", r"\b(?:と|and|AND|＆)\b",
 ]
 multi_regex = re.compile("|".join(MULTI_NAME_PATTERNS))
 
@@ -184,6 +187,56 @@ def split_client_and_dept(client_text: Any) -> tuple[str, str]:
     return (raw, "")
 
 
+# 部署名の前置語として使われる業務機能ワード。
+# 「部」で終わるトークンはこのリストに前置語が含まれる場合のみ部署と判定し、
+# 含まれない場合は苗字の可能性があるため部署扱いしない。
+# これにより「諏訪部」「磯部」「服部」などをホワイトリストなしで苗字扱いできる。
+DEPT_PREFIX_KEYWORDS = {
+    "総務", "経理", "人事", "営業", "開発", "技術", "管理", "企画", "広報",
+    "法務", "財務", "購買", "調達", "品質", "製造", "生産", "設計", "研究",
+    "情報", "システム", "マーケ", "販売", "物流", "資材", "施設", "環境",
+    "安全", "教育", "経営", "事業", "海外", "国際", "戦略", "監査", "秘書",
+    "CS", "IR", "PR", "DX", "IT", "業務", "庶務", "会計", "資金", "労務",
+    "採用", "育成", "研修", "評価", "渉外", "対外", "地域", "店舗", "流通",
+    "サービス", "サポート", "カスタマー", "マーケティング", "プロジェクト",
+}
+
+
+def _is_dept_like_token(token: str, wl: set[str]) -> bool:
+    """
+    Return True if this token looks like a department name (not a surname).
+
+    Strategy:
+    - Tokens ending with suffixes other than 「部」(課・室・センター etc.) and
+      len >= 3 are treated as departments unconditionally.
+    - Tokens ending with 「部」 are only treated as departments when their
+      prefix contains a known business-function keyword (DEPT_PREFIX_KEYWORDS).
+      This allows surnames like 諏訪部・磯部・服部 to pass through without
+      needing an explicit whitelist entry.
+    """
+    t = token.strip()
+    if not t:
+        return False
+    if t in wl:
+        return False
+    if not t.endswith(DEPT_SUFFIXES):
+        return False
+
+    if t.endswith("部"):
+        prefix = t[:-1]
+        return any(kw in prefix for kw in DEPT_PREFIX_KEYWORDS)
+
+    # 課・室・センター・本部・支店・営業所・事業部・事務所・店
+    # 「事業部」は "部" で終わるが上記チェック前に "事業部" 全体でマッチするよう
+    # DEPT_SUFFIXES の順序で先にチェックされる（startswith ではなく endswith なので
+    # "事業部".endswith("部") が True になる点に注意）
+    if t.endswith("事業部"):
+        prefix = t[:-3]
+        return any(kw in prefix for kw in DEPT_PREFIX_KEYWORDS) or len(t) >= 4
+
+    return len(t) >= 3
+
+
 def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     raw = safe_text(text).strip()
     if not raw:
@@ -215,10 +268,38 @@ def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     if any(k in last_family for k in TITLE_KEYWORDS) or any(k in last_given for k in TITLE_KEYWORDS):
         return None
 
-    if last_given not in wl and len(last_given) >= 2 and last_given.endswith(DEPT_SUFFIXES):
+    if _is_dept_like_token(last_given, wl):
         return None
 
-    if last_family not in wl and len(last_family) >= 3 and last_family.endswith(DEPT_SUFFIXES):
+    # If the "family name" slot looks like a dept name, try to recover
+    # a real name from last_given (e.g. "総務経理部 田中太郎" → "田中　太郎")
+    if _is_dept_like_token(last_family, wl):
+        lgv = last_given
+        # Try 2+2 split for 4-char tokens (most common Japanese name pattern)
+        if len(lgv) == 4:
+            cand_fam = lgv[:2]
+            cand_giv = lgv[2:]
+            if (cand_giv
+                    and not any(k in cand_fam or k in cand_giv for k in TITLE_KEYWORDS)
+                    and not _is_dept_like_token(cand_fam, wl)
+                    and not _is_dept_like_token(cand_giv, wl)
+                    and len(cand_fam) <= 12 and len(cand_giv) <= 12):
+                return f"{cand_fam}　{cand_giv}"
+        # Try 2+1 or 1+2 for 3-char tokens
+        elif len(lgv) == 3:
+            for cut in (2, 1):
+                cand_fam = lgv[:cut]
+                cand_giv = lgv[cut:]
+                if (cand_giv
+                        and not any(k in cand_fam or k in cand_giv for k in TITLE_KEYWORDS)
+                        and not _is_dept_like_token(cand_fam, wl)
+                        and not _is_dept_like_token(cand_giv, wl)
+                        and len(cand_fam) <= 12 and len(cand_giv) <= 12):
+                    return f"{cand_fam}　{cand_giv}"
+        # Could not recover → caller will route to review
+        return None
+
+    if _is_dept_like_token(last_family, wl):
         return None
 
     if len(last_family) > 12 or len(last_given) > 12:
@@ -232,11 +313,29 @@ def extract_last_fullname(text: Any, surname_whitelist: set[str]) -> str | None:
     return f"{last_family}　{last_given}"
 
 
+def has_dept_token_in_contact(text: Any, surname_whitelist: set[str]) -> bool:
+    """
+    Return True if the contact field contains a token that looks like a
+    department name (len >= 3, ends with a dept suffix, not in whitelist).
+    Used to route extraction failures to the 要確認（部署氏名混入） sheet.
+    """
+    raw = safe_text(text).strip()
+    if not raw:
+        return False
+    wl = surname_whitelist or set()
+    tokens = re.split(r'[\s　]+', raw)
+    for tok in tokens:
+        tok_clean = re.sub(r'(様|さま|殿)$', '', tok.strip())
+        if _is_dept_like_token(tok_clean, wl):
+            return True
+    return False
+
+
 def is_valid_fullname(fullname: Any) -> bool:
     t = safe_text(fullname)
     if not t:
         return False
-    if re.search(r"[、，,・/／＆&＋+\.]", t):
+    if re.search(r"[、，,・･/／＆&＋+\.]", t):
         return False
     parts = t.split("　")
     return len(parts) == 2 and all(p.strip() for p in parts)
@@ -340,6 +439,16 @@ def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, 
     col_addr1 = _find_col(cols, ALIAS_ADDR1)
     col_addr2 = _find_col(cols, ALIAS_ADDR2)
     col_addr3 = _find_col(cols, ALIAS_ADDR3)
+
+    # サブストリングマッチの副作用で同一列が複数の住所カラムに割り当てられることがある。
+    # 例：入力に「住所」1列しかない場合、_find_col の ck in ak マッチで
+    # "住所" が "住所3" の部分文字列として検出され col_addr1/2/3 が全て同じ列を指す。
+    # → 重複を検出したら番号の大きい側を None に排除する。
+    if col_addr2 is not None and col_addr2 == col_addr1:
+        col_addr2 = None
+    if col_addr3 is not None and (col_addr3 == col_addr1 or col_addr3 == col_addr2):
+        col_addr3 = None
+
     col_tel = _find_col(cols, ALIAS_TEL)
     col_tanto = _find_col(cols, ALIAS_TANTO_NAME)
     col_buka = _find_col(cols, ALIAS_BUKA)
@@ -465,8 +574,10 @@ def _sanitize_addr_text(s: Any) -> str:
     t = t.replace("\u0000", "")
     t = re.sub(r"[\r\n\t]", "", t)
     t = re.sub(r"[\x00-\x1f\x7f]", "", t)
+    # Convert typographic dashes to ASCII hyphen, but do NOT touch ｰ
+    # (half-width katakana prolonged sound mark used in place names like ｾﾝﾀｰ)
     t = re.sub(DASH_CHARS, "-", t)
-    t = t.replace("‐", "-").replace("‒", "-").replace("–", "-").replace("—", "-").replace("―", "-").replace("−", "-").replace("－", "-").replace("ｰ", "-")
+    t = t.replace("‐", "-").replace("‒", "-").replace("–", "-").replace("—", "-").replace("―", "-").replace("−", "-").replace("－", "-")
     t = t.replace("　", " ").strip()
     t = re.sub(r"[ ]+", " ", t)
     return t
@@ -525,7 +636,8 @@ def _addr_join(a: Any, b: Any) -> str:
 def _is_valid_bld(s: str) -> bool:
     if not s:
         return False
-    if re.fullmatch(r"[\d\-‐]+", s):
+    # Pure digits/hyphens/katakana long-sound only → not a valid building descriptor
+    if re.fullmatch(r"[\d\-‐ｰ]+", s):
         return False
     if re.fullmatch(r"[FＦ階号室]+", s):
         return False
@@ -589,6 +701,7 @@ def _split_last_segment_floor_three_hyphen(s: str) -> Tuple[str, str, bool, bool
 
 def _split_base_building_general(s: str) -> Tuple[str, str, bool, bool]:
     if " " in s or "　" in s:
+        # Only split on space when the left part ends with a digit
         m_space = re.match(r"^(.+?[\d])[ 　]+(.+)$", s.strip())
         if m_space:
             base = m_space.group(1)
@@ -865,7 +978,18 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
     df_valid = df_rest[valid_name_mask & ~is_multi_mask].copy()
     df_multi_name_all = df_rest[is_multi_mask].copy()
-    df_extraction_failure = df_rest[~valid_name_mask & ~is_multi_mask].copy()
+    df_extraction_fail_all = df_rest[~valid_name_mask & ~is_multi_mask].copy()
+
+    # Split extraction failures: those with dept-like tokens go to 要確認（部署氏名混入）
+    if len(df_extraction_fail_all) > 0:
+        dept_mask = df_extraction_fail_all["元データ（氏名）"].map(lambda x: has_dept_token_in_contact(x, wl))
+        df_dept_mixed = df_extraction_fail_all[dept_mask].copy()
+        df_extraction_failure = df_extraction_fail_all[~dept_mask].copy()
+        if len(df_dept_mixed) > 0:
+            df_dept_mixed["理由"] = "氏名欄に部署名が混在（人工確認要）"
+    else:
+        df_dept_mixed = df_extraction_fail_all.iloc[0:0].copy()
+        df_extraction_failure = df_extraction_fail_all.copy()
 
     if len(df_extraction_failure) > 0:
         df_extraction_failure["理由"] = "氏名抽出不可（2語形式でない/組織名誤認/役職誤認/前置き過長/会社名混入/部署混入）"
@@ -943,6 +1067,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df_paren_conflict_out = _finalize_for_export(df_paren_conflict)
     df_tantou_out = _finalize_for_export(df_tantou)
     df_extraction_failure_out = _finalize_for_export(df_extraction_failure)
+    df_dept_mixed_out = _finalize_for_export(df_dept_mixed)
     df_multi_name_out = _finalize_for_export(df_multi_name)
     df_addr_amb_out = _finalize_for_export(df_addr_amb)
     df_hr_out = _finalize_for_export(df_hr)
@@ -980,6 +1105,10 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
                 return r["抽出氏名（クリーン）"]
             if safe_text(r.get("抽出氏名", "")):
                 return r["抽出氏名"]
+            # Fall back to the original raw value from the source data
+            orig = safe_text(r.get("元データ（氏名）", ""))
+            if orig:
+                return strip_honorific_suffix(orig)
             return strip_honorific_suffix(r.get("ご担当者名", ""))
 
         x["送付氏名（姓　名）"] = x.apply(_fill_name, axis=1)
@@ -994,45 +1123,21 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
     df_main = _ensure_export_base(df_main)[export_cols_main]
 
-    df_name_conflict_out = _ensure_export_base(df_name_conflict_out)
-    if "理由" not in df_name_conflict_out.columns:
-        df_name_conflict_out["理由"] = ""
-    df_name_conflict_out = df_name_conflict_out[export_cols_check]
+    def _prep_check(d: pd.DataFrame, reason_default: str = "") -> pd.DataFrame:
+        out = _ensure_export_base(d)
+        if "理由" not in out.columns:
+            out["理由"] = reason_default
+        return out[export_cols_check]
 
-    df_paren_conflict_out = _ensure_export_base(df_paren_conflict_out)
-    if "理由" not in df_paren_conflict_out.columns:
-        df_paren_conflict_out["理由"] = ""
-    df_paren_conflict_out = df_paren_conflict_out[export_cols_check]
-
-    df_tantou_out = _ensure_export_base(df_tantou_out)
-    if "理由" not in df_tantou_out.columns:
-        df_tantou_out["理由"] = ""
-    df_tantou_out = df_tantou_out[export_cols_check]
-
-    df_extraction_failure_out = _ensure_export_base(df_extraction_failure_out)
-    if "理由" not in df_extraction_failure_out.columns:
-        df_extraction_failure_out["理由"] = ""
-    df_extraction_failure_out = df_extraction_failure_out[export_cols_check]
-
-    df_multi_name_out = _ensure_export_base(df_multi_name_out)
-    if "理由" not in df_multi_name_out.columns:
-        df_multi_name_out["理由"] = ""
-    df_multi_name_out = df_multi_name_out[export_cols_check]
-
-    df_addr_amb_out = _ensure_export_base(df_addr_amb_out)
-    if "理由" not in df_addr_amb_out.columns:
-        df_addr_amb_out["理由"] = ""
-    df_addr_amb_out = df_addr_amb_out[export_cols_check]
-
-    df_hr_out = _ensure_export_base(df_hr_out)
-    if "理由" not in df_hr_out.columns:
-        df_hr_out["理由"] = ""
-    df_hr_out = df_hr_out[export_cols_check]
-
-    df_agency_out = _ensure_export_base(df_agency_out)
-    if "理由" not in df_agency_out.columns:
-        df_agency_out["理由"] = ""
-    df_agency_out = df_agency_out[export_cols_check]
+    df_name_conflict_out = _prep_check(df_name_conflict_out)
+    df_paren_conflict_out = _prep_check(df_paren_conflict_out)
+    df_tantou_out = _prep_check(df_tantou_out)
+    df_extraction_failure_out = _prep_check(df_extraction_failure_out)
+    df_dept_mixed_out = _prep_check(df_dept_mixed_out)
+    df_multi_name_out = _prep_check(df_multi_name_out)
+    df_addr_amb_out = _prep_check(df_addr_amb_out)
+    df_hr_out = _prep_check(df_hr_out)
+    df_agency_out = _prep_check(df_agency_out)
 
     out_buf = BytesIO()
     with pd.ExcelWriter(out_buf, engine="openpyxl") as writer:
@@ -1042,6 +1147,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
         df_paren_conflict_out.to_excel(writer, sheet_name="要確認（クライアント名括弧）", index=False)
         df_tantou_out.to_excel(writer, sheet_name="要確認（ご担当者表記）", index=False)
         df_addr_amb_out.to_excel(writer, sheet_name="要確認（住所分割曖昧）", index=False)
+        df_dept_mixed_out.to_excel(writer, sheet_name="要確認（部署氏名混入）", index=False)
         df_hr_out.to_excel(writer, sheet_name="除外（人材派遣）", index=False)
         df_extraction_failure_out.to_excel(writer, sheet_name="除外（氏名抽出失敗）", index=False)
         df_multi_name_out.to_excel(writer, sheet_name="除外（複数名）", index=False)
@@ -1063,6 +1169,7 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
             "要確認（クライアント名括弧）": int(len(df_paren_conflict_out)),
             "要確認（ご担当者表記）": int(len(df_tantou_out)),
             "要確認（住所分割曖昧）": int(len(df_addr_amb_out)),
+            "要確認（部署氏名混入）": int(len(df_dept_mixed_out)),
             "除外（人材派遣）": int(len(df_hr_out)),
             "除外（氏名抽出失敗）": int(len(df_extraction_failure_out)),
             "除外（複数名）": int(len(df_multi_name_out)),
