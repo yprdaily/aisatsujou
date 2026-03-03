@@ -59,7 +59,7 @@ MULTI_NAME_PATTERNS = [
 ]
 multi_regex = re.compile("|".join(MULTI_NAME_PATTERNS))
 
-ALIAS_CLIENT = ["クライアント名", "得意先名称", "得意先名称1", "得意先名称２", "得意先名称１", "得意先名", "取引先名", "顧客名"]
+ALIAS_CLIENT = ["クライアント名", "得意先名称", "得意先名称1", "得意先名称２", "得意先名称１", "得意先名", "取引先名", "顧客名", "会社名", "社名"]
 ALIAS_CONTACT = ["ご担当者名", "担当者", "担当者名", "氏名", "連絡先", "ご担当者"]
 ALIAS_POST = ["郵便番号", "郵便", "〒"]
 ALIAS_ADDR1 = ["住所１", "住所1", "住所_1", "住所"]
@@ -431,7 +431,7 @@ def _read_input(excel_bytes: bytes, sheet_name: int | str = 0) -> pd.DataFrame:
 def _build_canonical_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
     cols = list(df.columns)
 
-    col_client_direct = _find_col(cols, ["クライアント名"])
+    col_client_direct = _find_col(cols, ALIAS_CLIENT)
     col_tok1 = _find_col(cols, ["得意先名称１", "得意先名称1"])
     col_tok2 = _find_col(cols, ["得意先名称２", "得意先名称2"])
     col_contact_generic = _find_col(cols, ALIAS_CONTACT)
@@ -557,6 +557,20 @@ def _pick_prefer_hq(group: pd.DataFrame) -> pd.DataFrame:
         if len(non_empty) > 0:
             return non_empty.iloc[[0]]
     return group.iloc[[0]]
+
+def _groupby_pick_hq(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """
+    pandas 2.x / 3.x 両対応の groupby + _pick_prefer_hq。
+    pandas 3.0 で groupby().apply() がグループキー列を除外する破壊的変更への対応。
+    """
+    if df.empty:
+        return df
+    results = []
+    for _, group in df.groupby(keys, sort=False):
+        results.append(_pick_prefer_hq(group))
+    if not results:
+        return df.iloc[0:0]
+    return pd.concat(results).reset_index(drop=True)
 
 
 def _norm_key_text(s: Any) -> str:
@@ -869,9 +883,15 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     for c in ["ご担当者名", "住所１", "住所２", "住所３", "クライアント名"]:
         df[c] = df[c].map(apply_kanji_conversion)
 
-    obj_cols = [c for c in df.columns if df[c].dtype == object]
+    # dtype チェックだけでは正規化が漏れるケースがあるため、
+    # 重要な列は明示的に含める（例: _build_canonical_columns で参照コピーされた列）
+    explicit_cols = ["クライアント名", "ご担当者名", "住所１", "住所２", "住所３"]
+    obj_cols = list(dict.fromkeys(
+        explicit_cols + [c for c in df.columns if df[c].dtype == object]
+    ))
     for c in obj_cols:
-        df[c] = df[c].map(normalize_katakana_to_half)
+        if c in df.columns:
+            df[c] = df[c].map(normalize_katakana_to_half)
 
     df["旧字メモ（氏名）"] = df["ご担当者名"].map(check_old_kanji)
     df["旧字メモ（住所）"] = (
@@ -954,11 +974,9 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     df["_dedupe_client"] = df["_client_norm"].map(_norm_key_text)
     df["_dedupe_tanto"] = df["担当者名称"].map(_norm_key_text)
 
-    df = (
-        df.sort_values(["_dedupe_client", "_dedupe_tanto", "_dedupe_addr", "_contact_raw"])
-        .groupby(["_dedupe_client", "_dedupe_tanto", "_dedupe_addr"], as_index=False, group_keys=False)
-        .apply(_pick_prefer_hq)
-        .reset_index(drop=True)
+    df = _groupby_pick_hq(
+        df.sort_values(["_dedupe_client", "_dedupe_tanto", "_dedupe_addr", "_contact_raw"]),
+        ["_dedupe_client", "_dedupe_tanto", "_dedupe_addr"],
     )
 
     df_addr_amb = df[df["_addr_ambiguous"] | df["_addr_3digit"]].copy()
@@ -996,11 +1014,9 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
 
     if len(df_multi_name_all) > 0:
         df_multi_name_all["理由"] = "複数名記号あり"
-        df_multi_name = (
-            df_multi_name_all.sort_values(["_dedupe_client", "_dedupe_addr", "_contact_raw"])
-            .groupby("_dedupe_client", as_index=False, group_keys=False)
-            .apply(_pick_prefer_hq)
-            .reset_index(drop=True)
+        df_multi_name = _groupby_pick_hq(
+            df_multi_name_all.sort_values(["_dedupe_client", "_dedupe_addr", "_contact_raw"]),
+            ["_dedupe_client"],
         )
     else:
         df_multi_name = df_multi_name_all
@@ -1024,19 +1040,17 @@ def process_excel_bytes(input_bytes: bytes, input_filename: str, config: Process
     if len(df_paren_conflict) > 0:
         df_paren_conflict["理由"] = "クライアント名に括弧あり"
 
-    selected_by_name = (
-        df_main_base.sort_values(["抽出氏名", "_contact_raw"])
-        .groupby("抽出氏名", as_index=False, group_keys=False)
-        .apply(_pick_prefer_hq)
+    selected_by_name = _groupby_pick_hq(
+        df_main_base.sort_values(["抽出氏名", "_contact_raw"]),
+        ["抽出氏名"],
     )
 
-    selected_by_client = (
-        selected_by_name.sort_values(["_dedupe_client", "_contact_raw", "抽出氏名"])
-        .groupby("_dedupe_client", as_index=False, group_keys=False)
-        .apply(_pick_prefer_hq)
+    selected_by_client = _groupby_pick_hq(
+        selected_by_name.sort_values(["_dedupe_client", "_contact_raw", "抽出氏名"]),
+        ["_dedupe_client"],
     )
 
-    is_hr = selected_by_client["部門"].map(safe_text).str.contains(r"(人材|派遣)", na=False, regex=True)
+    is_hr = selected_by_client["部門"].map(safe_text).str.contains(r"(?:人材|派遣)", na=False, regex=True)
     df_hr = selected_by_client[is_hr].copy()
     if len(df_hr) > 0:
         df_hr["理由"] = "除外（人材派遣関連部門）"
